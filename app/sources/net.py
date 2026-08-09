@@ -229,6 +229,56 @@ def fetch(url: str, *, headers: dict | None = None, data: bytes | None = None,
     raise RuntimeError(f"giving up on {url}: {last}")
 
 
+def download(url: str, dest: str, *, on_progress=None, timeout: int = 120,
+             attempts: int = 3, chunk: int = 1 << 18) -> int:
+    """GET straight to a file, saying how far along it is.
+
+    `fetch` reads the whole body before the caller sees a single byte. That is
+    right for a year of quotes and wrong for a published bundle: a full history
+    runs to hundreds of megabytes, which on a domestic connection is minutes of
+    a window that shows nothing and cannot be told apart from one that has hung.
+
+    ``on_progress(received, total)`` is called as it goes; ``total`` is 0 when
+    the server declines to say.
+    """
+    hdrs = {"User-Agent": USER_AGENT}
+    last = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=hdrs)
+            with _opener.open(req, timeout=timeout) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                got = 0
+                # Restarted from the beginning on a retry rather than resumed:
+                # a partial file that a retry appended to would be silently
+                # corrupt, and the sealing would report it as a wrong key.
+                with open(dest, "wb") as f:
+                    while True:
+                        block = resp.read(chunk)
+                        if not block:
+                            break
+                        f.write(block)
+                        got += len(block)
+                        if on_progress:
+                            on_progress(got, total)
+                if total and got < total:
+                    raise OSError(f"connection closed after {got} of {total} bytes")
+                return got
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise NotFound(url) from None
+            if e.code in (403, 451):
+                raise Blocked(f"HTTP {e.code} from {urllib.parse.urlparse(url).netloc}"
+                              ) from None
+            last = e
+            time.sleep(1 + attempt)
+        except Exception as e:              # timeouts, resets, short reads
+            last = e
+            time.sleep(1 + attempt)
+
+    raise RuntimeError(f"giving up on {url}: {last}")
+
+
 def probe(url: str, timeout: int = 15) -> dict:
     """One quick attempt, reporting what happened rather than raising.
 

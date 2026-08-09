@@ -34,7 +34,13 @@ FLUSH_EVERY = 400
 # A full sweep of every forex pair back to 2000 is around sixteen gigabytes, so
 # a long unattended run has to be able to stop itself. Filling someone's system
 # drive is a worse outcome than an incomplete history.
-MIN_FREE_BYTES = 8 * 1024 ** 3
+#
+# Overridable because the publishing job works through one instrument at a time
+# and deletes each when it is done, so it never needs more than a fraction of a
+# gigabyte — while the machine it runs on has far less free space than a
+# desktop, and would otherwise refuse to start.
+MIN_FREE_BYTES = int(float(os.environ.get("BACKTESTER_MIN_FREE_GB", "8"))
+                     * 1024 ** 3)
 
 
 def free_space() -> int:

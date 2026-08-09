@@ -153,9 +153,11 @@ if errorlevel 1 (
   echo         Key stored.
 )
 gh variable set SYMBOLS --repo "%GHUSER%/backtester-data" --body "all" >nul 2>&1
-gh variable set YEARS   --repo "%GHUSER%/backtester-data" --body "5" >nul 2>&1
-gh variable set MINUTES --repo "%GHUSER%/backtester-data" --body "240" >nul 2>&1
-echo         All 71 instruments, last 5 years.
+gh variable set MINUTES --repo "%GHUSER%/backtester-data" --body "150" >nul 2>&1
+rem No YEARS setting any more: every instrument is fetched back as far as its
+rem source goes, which for the currency pairs is the year 2000.
+gh variable delete YEARS --repo "%GHUSER%/backtester-data" >nul 2>&1
+echo         All 71 instruments, full history.
 
 echo.
 echo   [7/7] Starting the first update...
@@ -180,9 +182,10 @@ if not defined STARTED (
 ) else (
   echo         Started. It runs on GitHub's computers, not yours.
 echo.
-echo         The first run will not finish everything - the Dow is
-echo         fetched one day at a time. It publishes what it gets and
-echo         carries on tomorrow. After a few nights it is complete.
+echo         The first run will not finish everything - it fetches each
+echo         market back to the year its data starts, and the Dow comes
+echo         one day at a time. Every run publishes what it managed and
+echo         the next one carries on. It is complete within a day or so.
 )
 
 set "MIRROR=https://github.com/%GHUSER%/backtester-data/releases/download/history"
@@ -196,12 +199,11 @@ echo.
 echo   Watch it work here:
 echo     https://github.com/%GHUSER%/backtester-data/actions
 echo.
-echo   When it turns green, paste this into the application, under the
-echo   disk button, next to "Mirror":
+echo   Nothing to paste anywhere. This address is saved for you in
+echo   MIRROR-ADDRESS.txt, and BUILD-INSTALLER.bat writes it straight
+echo   into the application your customers install:
 echo.
 echo     !MIRROR!
-echo.
-echo   Saved for you in MIRROR-ADDRESS.txt
 echo.
 echo   ----------------------------------------------------------------
 echo   KEEP THIS FILE:  YOUR-SECRET-KEY.txt

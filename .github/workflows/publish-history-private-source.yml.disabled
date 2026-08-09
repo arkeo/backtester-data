@@ -13,7 +13,7 @@ name: publish history (private source)
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -39,30 +39,21 @@ jobs:
           python-version: "3.13"
       - run: pip install numpy
 
-      - name: Restore the store
-        uses: actions/cache@v4
-        with:
-          path: data
-          key: history-${{ github.run_id }}
-          restore-keys: history-
-
-      - name: Fetch, trim, seal
-        env:
-          BACKTESTER_DATA: ${{ github.workspace }}/data
-          BACKTESTER_KEY: ${{ secrets.BACKTESTER_KEY }}
-        run: |
-          YEARS="${{ vars.YEARS || '5' }}"
-          FROM=$(date -u -d "$YEARS years ago" +%Y-%m-%d)
-          for symbol in ${{ vars.SYMBOLS || 'EURUSD XAUUSD US30' }}; do
-            python -m app.fetch "$symbol" --from "$FROM" || echo "::warning::$symbol did not complete"
-          done
-          python -m app.trim all --years "$YEARS"
-          python -m app.portable publish all --to mirror
-
-      - name: Replace the release assets
+      - name: Make sure the release exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view history >/dev/null 2>&1 \
             || gh release create history --title "Market history" --notes "Updated automatically."
-          gh release upload history mirror/* --clobber
+
+      - name: Update the mirror
+        env:
+          BACKTESTER_DATA: ${{ github.workspace }}/data
+          BACKTESTER_KEY: ${{ secrets.BACKTESTER_KEY }}
+          BACKTESTER_MIN_FREE_GB: "2"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m app.mirror_job ${{ vars.SYMBOLS || 'all' }} \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/history" \
+            --minutes "${{ vars.MINUTES || '120' }}" \
+            --tag history --to mirror

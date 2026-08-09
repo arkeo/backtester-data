@@ -17,11 +17,15 @@ Under **Settings -> Secrets and variables -> Actions**:
 | kind | name | value |
 |---|---|---|
 | secret | `BACKTESTER_KEY` | the publisher key the application is built with |
-| variable | `SYMBOLS` | `EURUSD XAUUSD US30 GBPUSD USDJPY BTCUSD` |
-| variable | `YEARS` | `5` |
+| variable | `SYMBOLS` | `all` |
+| variable | `MINUTES` | `150` |
+
+Every instrument is fetched back as far as its source carries it — the year
+2000 for the currency pairs — so the first runs have a lot to do. Each run
+publishes what it managed and the next one carries on.
 
 Then **Actions -> publish history -> Run workflow** for the first run. After
-that it runs itself every morning.
+that it runs itself every three hours.
 
 The address to give the application is:
 

@@ -261,10 +261,23 @@ def publish(symbols: list[str], out_dir: str, progress=None,
         if progress:
             progress(i + 1, len(symbols), symbol)
 
+    index = write_index(entries, out_dir, seal)
+    return {"dir": os.path.abspath(out_dir), "index": index, "sealed": seal,
+            "bytes": sum(e["bytes"] for e in entries)}
+
+
+def write_index(entries: list[dict], out_dir: str, seal: bool = True) -> dict:
+    """Write the listing that tells the application what is on offer.
+
+    Separate from `publish` because a mirror is not always built in one go: the
+    scheduled job seals one instrument at a time and has to be able to rewrite
+    the listing after each one without re-exporting the rest.
+    """
+    os.makedirs(out_dir, exist_ok=True)
     index = {
         "format": 1,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "instruments": entries,
+        "instruments": list(entries),
     }
     raw = json.dumps(index, indent=2).encode()
     if seal:
@@ -276,8 +289,7 @@ def publish(symbols: list[str], out_dir: str, progress=None,
     else:
         with open(os.path.join(out_dir, INDEX), "wb") as f:
             f.write(raw)
-    return {"dir": os.path.abspath(out_dir), "index": index, "sealed": seal,
-            "bytes": sum(e["bytes"] for e in entries)}
+    return index
 
 
 def mirror_index(base_url: str) -> dict:
@@ -313,32 +325,43 @@ def mirror_index(base_url: str) -> dict:
     return index
 
 
-def mirror_fetch(base_url: str, symbol: str, progress=None) -> dict:
-    """Download one instrument from a mirror and import it."""
+def mirror_fetch(base_url: str, symbol: str, progress=None,
+                 on_bytes=None, on_stage=None) -> dict:
+    """Download one instrument from a mirror and import it.
+
+    ``on_bytes(received, total)`` and ``on_stage(text)`` exist because a full
+    history is a large file: without them the whole operation is one silent
+    wait, and there is no way to tell a slow connection from a stalled one.
+    """
     from .sources import net
     base = base_url.strip().rstrip("/")
+    if on_stage:
+        on_stage("finding it")
     index = mirror_index(base)
     entry = next((e for e in index["instruments"]
                   if e["symbol"].upper() == symbol.upper()), None)
     if not entry:
         raise ValueError(f"{symbol} is not on that mirror")
 
-    blob = net.fetch(f"{base}/{entry['file']}", timeout=300, attempts=3)
     # Straight to a file rather than through memory twice: these run to
     # hundreds of megabytes for a long history.
     scratch = os.path.join(paths.root(), "incoming")
     os.makedirs(scratch, exist_ok=True)
     tmp = os.path.join(scratch, entry["file"])
-    with open(tmp, "wb") as f:
-        f.write(blob)
     try:
+        if on_stage:
+            on_stage("downloading")
+        got = net.download(f"{base}/{entry['file']}", tmp,
+                           on_progress=on_bytes, timeout=120, attempts=3)
+        if on_stage:
+            on_stage("adding it to your history")
         result = import_bundle(tmp, progress=progress)
     finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
-    return {"symbol": symbol, "bytes": len(blob), **result}
+    return {"symbol": symbol, "bytes": got, **result}
 
 
 def _cli():
