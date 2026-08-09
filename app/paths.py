@@ -79,7 +79,21 @@ def apply_saved_proxy() -> str:
 
 
 def mirror() -> str:
-    return read_config().get("mirror", "")
+    """Where history comes from.
+
+    Compiled into the build, so nobody has to be told an address and nothing
+    has to be typed in. A saved setting overrides it, which is what makes it
+    possible to move customers to a different address later without rebuilding
+    anything for them.
+    """
+    chosen = read_config().get("mirror", "")
+    if chosen:
+        return chosen
+    try:
+        from ._key import MIRROR
+        return MIRROR
+    except ImportError:
+        return ""
 
 
 def set_mirror(url: str) -> str:
