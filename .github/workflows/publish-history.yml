@@ -10,7 +10,7 @@
 #   var     SYMBOLS          "all" for the whole catalogue, or a list, or a
 #                            group name such as "forex" or "crypto"
 #   var     YEARS            how far back to keep, e.g. "5"
-#   var     MINUTES          how long one run may spend fetching (default 240)
+#   var     MINUTES          how long one run may spend fetching (default 45)
 #
 # The first run will not finish the whole catalogue — the Dow alone is fetched
 # one day at a time. That is fine and expected: each run publishes whatever it
@@ -21,9 +21,14 @@ name: publish history
 
 on:
   schedule:
-    # 06:00 UTC daily. The sources publish the previous day some hours after
-    # midnight, so this is comfortably after they settle.
-    - cron: "0 6 * * *"
+    # Every three hours, not once a day.
+    #
+    # Publishing happens at the END of a run, so a long run means a long time
+    # with nothing at the mirror at all — on the first run, hours. Short runs
+    # that go often are better in every way: something usable appears quickly,
+    # the catalogue still fills in within a day, and a failure costs one slot
+    # instead of a whole day.
+    - cron: "0 */3 * * *"
   workflow_dispatch:          # and a button, for the first run
 
 concurrency:
@@ -63,7 +68,7 @@ jobs:
         run: |
           YEARS="${{ vars.YEARS || '5' }}"
           SYMBOLS="${{ vars.SYMBOLS || 'all' }}"
-          MINUTES="${{ vars.MINUTES || '240' }}"
+          MINUTES="${{ vars.MINUTES || '45' }}"
           FROM=$(date -u -d "$YEARS years ago" +%Y-%m-%d)
           echo "updating $SYMBOLS from $FROM, up to $MINUTES minutes"
           # The budget matters more than it looks: a run killed by the job

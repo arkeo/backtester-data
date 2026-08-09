@@ -294,8 +294,13 @@ def mirror_index(base_url: str) -> dict:
         except net.NotFound:
             continue
     if raw is None:
-        raise ValueError("no index at that address — check it points at the "
-                         "folder the publish step wrote")
+        # By far the most common reason, and it looks identical to a wrong
+        # address: the publisher has set the mirror up but the first run has
+        # not finished, so the files genuinely are not there yet.
+        raise ValueError(
+            "Nothing published at that address yet. Either the address is "
+            "wrong, or the publisher's first update has not finished — that "
+            "one takes a while. Try again in an hour.")
     if crypt.looks_encrypted(raw):
         raw = crypt.decrypt(raw, publisher_key())
     try:
