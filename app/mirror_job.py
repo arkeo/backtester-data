@@ -195,10 +195,20 @@ def upload(path: str, tag: str) -> None:
 # the run
 # --------------------------------------------------------------------------
 
-def slice_for(deadline: float | None) -> float | None:
-    """When this instrument must hand the run on, whichever comes first."""
-    mine = time.time() + PER_SYMBOL_MINUTES * 60
-    return min(mine, deadline) if deadline else mine
+def slice_for(deadline: float | None, remaining: int = 1) -> float | None:
+    """When this instrument must hand the run on.
+
+    The cap is a floor, not a ceiling. Its job is to stop one slow instrument
+    starving the queue behind it — so when there is barely a queue left there
+    is nothing to protect, and holding the Dow to twenty-five minutes of a
+    two-and-a-half hour run would just leave the machine idle. It takes the
+    larger of its cap and its fair share of what is left.
+    """
+    now = time.time()
+    if not deadline:
+        return now + PER_SYMBOL_MINUTES * 60
+    share = (deadline - now) / max(1, remaining)
+    return min(now + max(PER_SYMBOL_MINUTES * 60, share), deadline)
 
 
 def _with_ticker(symbol: str, deadline: float | None):
@@ -253,7 +263,7 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
     deadline = time.time() + minutes * 60 if minutes else None
     touched, out_of_time = [], False
 
-    for symbol in todo:
+    for done_so_far, symbol in enumerate(todo):
         if deadline and time.time() > deadline:
             out_of_time = True
             print(f"\n=== out of time; {len(todo) - len(touched)} left for the "
@@ -268,7 +278,8 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             if had:
                 print(f"  restored {had:,} bars from the mirror", flush=True)
 
-            prog = _with_ticker(symbol, slice_for(deadline))
+            prog = _with_ticker(
+                symbol, slice_for(deadline, len(todo) - done_so_far))
 
             fresh = seal(symbol, out_dir)
             if fresh is None:

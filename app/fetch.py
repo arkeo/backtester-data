@@ -27,6 +27,34 @@ from . import catalog, paths, store
 from .sources import binance, dukascopy, histdata, net
 
 WORKERS = 4
+
+#: Requests in flight for a source served one DAY at a time.
+#:
+#: Four was inherited and never measured. Sixty real Dow days, fetched at
+#: several settings against the live feed:
+#:
+#:     workers   seconds   failures
+#:           4     567         8
+#:           8     598        22
+#:          12     465        22
+#:          16     406        12
+#:          24     262        23
+#:
+#: Higher is faster and also refused more often, and past sixteen the extra
+#: speed is bought entirely with failures that have to be fetched again later.
+#: Sixteen is where the curve stops paying.
+DAY_WORKERS = 16
+
+
+def workers_for(inst) -> int:
+    """How many requests to have in flight for this instrument.
+
+    A HistData year is one large archive and several hundred thousand lines to
+    parse, so four of those at once already saturates a machine. A Dukascopy
+    day is fifteen kilobytes and is bounded by round-trip latency alone, and
+    there are thousands of them.
+    """
+    return DAY_WORKERS if inst.source == "dukascopy" else WORKERS
 # Bars are accumulated in memory and folded into the store in batches. Merging
 # after every unit would rewrite the whole M1 file thousands of times.
 FLUSH_EVERY = 400
@@ -292,10 +320,11 @@ class Progress:
 
 
 def download(symbol: str, start: date | None = None, end: date | None = None,
-             workers: int = WORKERS, progress: Progress | None = None,
+             workers: int | None = None, progress: Progress | None = None,
              deadline: float | None = None) -> dict:
     """Fetch everything missing for ``symbol`` and fold it into the store."""
     inst = catalog.get(symbol)
+    workers = workers or workers_for(inst)
     units = pending(symbol, plan(symbol, start, end))
     prog = progress or Progress(symbol, len(units))
     with prog.lock:
@@ -447,7 +476,8 @@ def _cli():
     ap.add_argument("--from", dest="start", help="YYYY-MM-DD")
     ap.add_argument("--to", dest="end", help="YYYY-MM-DD")
     ap.add_argument("--years", type=int, help="just the last N years")
-    ap.add_argument("--workers", type=int, default=WORKERS)
+    ap.add_argument("--workers", type=int, default=None,
+                    help="override the per-source default")
     ap.add_argument("--minutes", type=float, default=0,
                     help="stop starting new work after this long, keeping "
                          "everything fetched so far. A scheduled run needs "

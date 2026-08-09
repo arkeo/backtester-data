@@ -91,9 +91,21 @@ def fetch_day(duka_symbol: str, day: date, point: float, scale: int) -> np.ndarr
             return None
 
     futures = {side: _SIDES.submit(one, side) for side in ("BID", "ASK")}
-    sides = {side: f.result() for side, f in futures.items()}
 
-    bid, ask = sides["BID"], sides["ASK"]
+    # The two halves are not equally important, and treating them as though
+    # they were threw away whole days for nothing. Bid is the price series —
+    # without it there is no day. Ask only supplies the spread, and when the
+    # feed refuses it the honest result is a day priced correctly with its
+    # spread left unknown, exactly as every instrument whose source carries no
+    # bid/ask is already stored. Failing the day instead meant a refusal on the
+    # lesser half discarded a complete, already-paid-for download — and on a
+    # feed that refuses a fifth of requests, that was most of the loss.
+    bid = futures["BID"].result()
+    try:
+        ask = futures["ASK"].result()
+    except Exception:                     # noqa: BLE001
+        ask = None
+
     if bid is None:
         # No bid means no session. An ask-only day is not usable on its own.
         return np.empty(0, dtype=store.BAR)
