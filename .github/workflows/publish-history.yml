@@ -62,6 +62,24 @@ jobs:
           key: history-${{ github.run_id }}
           restore-keys: history-
 
+      # Which sources can this runner actually reach? GitHub's machines are
+      # data-centre addresses, and some feeds refuse those — which would show
+      # up only as an unexplainably slow run.
+      - name: Check the sources
+        env:
+          BACKTESTER_DATA: ${{ github.workspace }}/data
+        run: |
+          python - <<'EOF'
+          from app.sources import net
+          for name, url in [
+              ("histdata", "https://www.histdata.com/download-free-forex-historical-data/"),
+              ("dukascopy", "https://datafeed.dukascopy.com/datafeed/EURUSD/2024/00/02/BID_candles_min_1.bi5"),
+              ("binance", "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01.zip"),
+          ]:
+              r = net.probe(url, timeout=20)
+              print(f"{name:10s} ok={r['ok']} status={r.get('status')} {r.get('detail','')} ({r['ms']} ms)")
+          EOF
+
       - name: Fetch what is missing
         env:
           BACKTESTER_DATA: ${{ github.workspace }}/data

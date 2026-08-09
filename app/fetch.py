@@ -327,6 +327,15 @@ def download(symbol: str, start: date | None = None, end: date | None = None,
     def work(unit: str):
         if prog.cancelled:
             return
+        if deadline and time.time() > deadline:
+            # Checked here, per unit, and not only per batch. A batch is up to
+            # four hundred units and a single unit can take minutes when a
+            # source is failing and the fallback is walking a year day by day,
+            # so a batch-level check can overshoot the budget many times over.
+            with prog.lock:
+                prog.cancelled = True
+                prog.message = "stopped: out of time for this run"
+            return
         try:
             bars = _fetch_unit(inst, unit, prog)
             with buf_lock:
