@@ -268,6 +268,9 @@ def refresh_meta(symbol: str) -> dict:
     m1 = load(symbol, "M1")          # read once, reused by the rebuild below
     counts = rebuild_timeframes(symbol, m1)
     meta = read_meta(symbol)
+    # Written by older versions. update() would leave it in place forever, so
+    # a machine that ever ran one keeps the name until the file is deleted.
+    meta.pop("source", None)
     meta.update({
         "symbol": inst.symbol,
         "name": inst.name,
@@ -275,7 +278,8 @@ def refresh_meta(symbol: str) -> dict:
         "point": inst.point,
         "digits": inst.digits,
         "contract": inst.contract,
-        "source": inst.source,
+        # No "source". This file sits in the customer's profile in plain text
+        # and travels inside every bundle; nothing reads it back.
         "bars": int(len(m1)),
         "counts": counts,
         "first": int(m1["t"][0]) if len(m1) else None,

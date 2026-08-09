@@ -45,6 +45,16 @@ from .sources import net
 #: hour drifting later and later.
 REFRESH_HOURS = 20
 
+#: The longest any one instrument may hold the run.
+#:
+#: Without this, the slowest instrument in the catalogue starves every other.
+#: The Dow is fetched a day at a time — thousands of requests for its full
+#: history — so it simply absorbed whole runs, and the mirror ended up with
+#: currency pairs and no crypto at all, which is not a shortage of data but a
+#: queue nobody else could get to the front of. Capped, it still finishes: it
+#: keeps what it fetched, and takes its slice again next time.
+PER_SYMBOL_MINUTES = 25
+
 
 # --------------------------------------------------------------------------
 # what is already out there
@@ -166,6 +176,12 @@ def upload(path: str, tag: str) -> None:
 # the run
 # --------------------------------------------------------------------------
 
+def slice_for(deadline: float | None) -> float | None:
+    """When this instrument must hand the run on, whichever comes first."""
+    mine = time.time() + PER_SYMBOL_MINUTES * 60
+    return min(mine, deadline) if deadline else mine
+
+
 def _with_ticker(symbol: str, deadline: float | None):
     """Run one download, printing a line every few seconds.
 
@@ -226,7 +242,7 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             if had:
                 print(f"  restored {had:,} bars from the mirror", flush=True)
 
-            prog = _with_ticker(symbol, deadline)
+            prog = _with_ticker(symbol, slice_for(deadline))
 
             fresh = seal(symbol, out_dir)
             if fresh is None:

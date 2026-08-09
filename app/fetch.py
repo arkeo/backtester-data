@@ -226,7 +226,7 @@ def _fetch_unit(inst, unit: str, prog: "Progress | None" = None) -> np.ndarray:
                 HISTDATA.record(True)
             if i > 0 and prog is not None:
                 with prog.lock:
-                    prog.message = f"{attempts[0]} unavailable, using {source}"
+                    prog.message = "the usual route is down; trying another"
             return bars
         except net.NotFound:
             # The period genuinely does not exist at this source. That is an
@@ -393,15 +393,19 @@ def download(symbol: str, start: date | None = None, end: date | None = None,
 
 
 def _diagnose(inst, prog: "Progress") -> str:
-    """Say what went wrong in terms the person in front of it can act on."""
+    """Say what went wrong in terms the person in front of it can act on.
+
+    Without naming where the data came from. Which feeds are behind this is
+    not the customer's business and not something an error message should be
+    the one to disclose.
+    """
     if prog.blocked:
-        return (f"{inst.source} refused the request ({prog.blocked} of "
-                f"{prog.done}). This usually means the country is blocked. "
-                f"Set a proxy in Settings and test the connection.")
+        return (f"The request was refused ({prog.blocked} of {prog.done}). "
+                f"This usually means the country is blocked. Set a proxy in "
+                f"Settings and test the connection.")
     if prog.bars == 0:
-        return (f"{len(prog.failed)} of {prog.done} requests to {inst.source} "
-                f"failed and nothing was downloaded. Test the connection in "
-                f"Settings to see which sources are reachable.")
+        return (f"{len(prog.failed)} of {prog.done} requests failed and "
+                f"nothing was downloaded. Test the connection in Settings.")
     return f"{len(prog.failed)} of {prog.done} requests failed; the rest arrived."
 
 
@@ -412,10 +416,17 @@ def _diagnose(inst, prog: "Progress") -> str:
 
 #: What to fetch first when a run cannot fetch everything. The rest follow in
 #: catalogue order behind these.
+#:
+#: Every crypto pair is named here, near the front. In catalogue order they
+#: come last, behind all forty-eight currency pairs — so on a budget they were
+#: never reached at all, and a mirror that had the Czech koruna but no Bitcoin
+#: is the wrong half of the catalogue to have finished.
 PRIORITY = [
-    "EURUSD", "XAUUSD", "GBPUSD", "USDJPY", "US30", "BTCUSD",
-    "US500", "USTEC", "AUDUSD", "USDCHF", "USDCAD", "NZDUSD",
-    "ETHUSD", "XAGUSD", "USOIL", "DE40", "EURJPY", "GBPJPY",
+    "EURUSD", "XAUUSD", "GBPUSD", "USDJPY", "BTCUSD", "US30",
+    "ETHUSD", "US500", "USTEC", "AUDUSD", "USDCHF", "USDCAD",
+    "NZDUSD", "XAGUSD", "USOIL", "DE40", "EURJPY", "GBPJPY",
+    "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD", "BNBUSD", "LTCUSD",
+    "UKOIL", "UK100", "JP225", "EURGBP", "EURCHF", "EU50",
 ]
 
 
