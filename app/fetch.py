@@ -404,6 +404,23 @@ def _diagnose(inst, prog: "Progress") -> str:
 # command line
 # --------------------------------------------------------------------------
 
+#: What to fetch first when a run cannot fetch everything. The rest follow in
+#: catalogue order behind these.
+PRIORITY = [
+    "EURUSD", "XAUUSD", "GBPUSD", "USDJPY", "US30", "BTCUSD",
+    "US500", "USTEC", "AUDUSD", "USDCHF", "USDCAD", "NZDUSD",
+    "ETHUSD", "XAGUSD", "USOIL", "DE40", "EURJPY", "GBPJPY",
+]
+
+
+def priority(symbol: str) -> tuple[int, int]:
+    try:
+        return (0, PRIORITY.index(symbol))
+    except ValueError:
+        order = [i.symbol for i in catalog.INSTRUMENTS]
+        return (1, order.index(symbol) if symbol in order else 999)
+
+
 def _cli():
     import argparse
 
@@ -445,9 +462,17 @@ def _cli():
     if args.years:
         start = datetime.now(timezone.utc).date() - timedelta(days=365 * args.years)
 
+    # Fetch the instruments people actually ask for first.
+    #
+    # A run on a budget gets through only part of the catalogue, and plain
+    # catalogue order put all forty-eight forex pairs — including the Czech
+    # koruna — ahead of gold, the Dow and Bitcoin. Whatever the budget covers
+    # should be the useful part.
+    wanted = sorted(dict.fromkeys(wanted), key=priority)
+
     deadline = time.time() + args.minutes * 60 if args.minutes else None
 
-    for sym in dict.fromkeys(wanted):
+    for sym in wanted:
         if deadline and time.time() > deadline:
             print(f"\n=== out of time; {sym} and the rest are left for the "
                   f"next run ===", flush=True)
