@@ -1,0 +1,10 @@
+data/
+mirror/
+__pycache__/
+*.pyc
+
+# The publisher key, written next to the script that generates it. This
+# repository is public: committing this file would hand the key to everyone
+# and make the sealing worthless.
+YOUR-SECRET-KEY.txt
+MIRROR-ADDRESS.txt

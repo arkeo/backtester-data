@@ -1,0 +1,103 @@
+# Keep the published history current, without anyone uploading anything.
+#
+# Runs on GitHub's machines, which can reach all three sources — so this works
+# regardless of what the publisher's own connection can get to. Each run pulls
+# only what is missing (the store is cached between runs and the fetcher is
+# resumable), seals the result, and replaces the release assets.
+#
+# Set these in the repository, under Settings -> Secrets and variables:
+#   secret  BACKTESTER_KEY   the publisher key the application is built with
+#   var     SYMBOLS          "all" for the whole catalogue, or a list, or a
+#                            group name such as "forex" or "crypto"
+#   var     YEARS            how far back to keep, e.g. "5"
+#   var     MINUTES          how long one run may spend fetching (default 240)
+#
+# The first run will not finish the whole catalogue — the Dow alone is fetched
+# one day at a time. That is fine and expected: each run publishes whatever it
+# has, and the next one carries on from the manifest. After a few nights the
+# mirror is complete, and from then on a run only picks up the new day.
+
+name: publish history
+
+on:
+  schedule:
+    # 06:00 UTC daily. The sources publish the previous day some hours after
+    # midnight, so this is comfortably after they settle.
+    - cron: "0 6 * * *"
+  workflow_dispatch:          # and a button, for the first run
+
+concurrency:
+  group: publish-history      # never two runs writing the same release
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # needed to create and update the release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install numpy
+
+      # The store is what makes this cheap: after the first run each day adds
+      # a day, not a decade. The key changes every run so the cache is always
+      # written back; restore-keys finds the most recent one.
+      - name: Restore the store
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: history-${{ github.run_id }}
+          restore-keys: history-
+
+      - name: Fetch what is missing
+        env:
+          BACKTESTER_DATA: ${{ github.workspace }}/data
+        run: |
+          YEARS="${{ vars.YEARS || '5' }}"
+          SYMBOLS="${{ vars.SYMBOLS || 'all' }}"
+          MINUTES="${{ vars.MINUTES || '240' }}"
+          FROM=$(date -u -d "$YEARS years ago" +%Y-%m-%d)
+          echo "updating $SYMBOLS from $FROM, up to $MINUTES minutes"
+          # The budget matters more than it looks: a run killed by the job
+          # timeout publishes nothing at all, whereas one that stops itself
+          # publishes everything it managed and resumes tomorrow.
+          python -m app.fetch $SYMBOLS --from "$FROM" --minutes "$MINUTES"             || echo "::warning::the fetch did not complete; publishing what arrived"
+
+      - name: Trim to the published window
+        env:
+          BACKTESTER_DATA: ${{ github.workspace }}/data
+        run: python -m app.trim all --years "${{ vars.YEARS || '5' }}"
+
+      - name: Seal and publish
+        env:
+          BACKTESTER_DATA: ${{ github.workspace }}/data
+          BACKTESTER_KEY: ${{ secrets.BACKTESTER_KEY }}
+        run: |
+          python -m app.portable publish all --to mirror
+          ls -lh mirror
+
+      - name: Replace the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A single rolling release, so the download address never changes.
+          gh release view history >/dev/null 2>&1 \
+            || gh release create history --title "Market history" --notes "Updated automatically."
+          gh release upload history mirror/* --clobber
+          gh release edit history \
+            --notes "Updated $(date -u '+%Y-%m-%d %H:%M') UTC. Sealed; opens only in the application."
+
+      - name: Say where it is
+        run: |
+          echo "Mirror address for the application:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "https://github.com/${{ github.repository }}/releases/download/history" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

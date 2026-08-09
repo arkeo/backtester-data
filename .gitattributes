@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# Batch files are the exception: Windows needs CRLF in them. With LF, a
+# `call :label` jumps to the wrong place and the script fails in ways that
+# look like the script is wrong rather than the checkout.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.ico binary
+*.bin binary
+*.btdata binary
