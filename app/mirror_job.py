@@ -93,6 +93,25 @@ def _age_hours(entry: dict) -> float:
     return (time.time() - last) / 3600.0
 
 
+def prune(index: dict, tag: str, do_upload: bool) -> list[str]:
+    """Take off the mirror anything the application fetches for itself.
+
+    Not merely "stop publishing it": a bundle that was published once stays on
+    the release until something removes it, and the listing would go on
+    offering it. Left alone, customers would keep taking the slower copy of
+    something they can get directly.
+    """
+    from . import crypt
+    gone = [s for s in index if catalog.is_direct(s)]
+    for symbol in gone:
+        name = index.pop(symbol)["file"]
+        if do_upload:
+            subprocess.run(["gh", "release", "delete-asset", tag, name, "--yes"],
+                           check=False)
+        print(f"  removed {symbol} from the mirror")
+    return gone
+
+
 def choose(symbols: list[str], index: dict) -> list[str]:
     """Which instruments this run should touch, most useful first.
 
@@ -219,6 +238,13 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
     print("=== what is published now ===", flush=True)
     index = published(base_url)
 
+    symbols = [s for s in symbols if not catalog.is_direct(s)]
+    dropped = prune(index, tag, do_upload)
+    if dropped:
+        write_index(index, out_dir)
+        if do_upload:
+            upload(os.path.join(out_dir, portable.SEALED_INDEX), tag)
+
     todo = choose(symbols, index)
     print(f"\n{len(todo)} of {len(symbols)} instruments need work this run")
     if todo:
@@ -285,6 +311,9 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
     if do_upload and touched:
         upload(os.path.join(out_dir, portable.SEALED_INDEX), tag)
 
+    if do_upload and dropped and not touched:
+        upload(os.path.join(out_dir, portable.SEALED_INDEX), tag)
+
     total_bars = sum(e.get("bars", 0) for e in index.values())
     total_bytes = sum(e.get("bytes", 0) for e in index.values())
     left = sum(1 for e in index.values() if e.get("backlog", 0) > 0)
@@ -318,7 +347,7 @@ def _cli():
     for s in (args.symbols or ["all"]):
         low = s.lower()
         if low == "all":
-            wanted += [i.symbol for i in catalog.INSTRUMENTS]
+            wanted += catalog.mirrored()
         elif low in catalog.GROUPS:
             wanted += [i.symbol for i in catalog.INSTRUMENTS if i.group == low]
         else:

@@ -232,6 +232,29 @@ BY_SYMBOL = {i.symbol: i for i in INSTRUMENTS}
 
 GROUPS = ["forex", "metals", "indices", "energy", "crypto"]
 
+#: Groups the application fetches for itself instead of taking from the
+#: published mirror.
+#:
+#: Crypto is here because it does not need the mirror: the feed behind it
+#: answers everywhere the application has been tried, including the networks
+#: that block everything else, so a customer gets these directly and quickly.
+#: Publishing them as well would be a second copy of something already
+#: working — bandwidth, storage and delay for no gain.
+DIRECT_GROUPS = {"crypto"}
+
+
+def is_direct(symbol: str) -> bool:
+    """True when this instrument is downloaded by the application itself."""
+    try:
+        return BY_SYMBOL[symbol.upper()].group in DIRECT_GROUPS
+    except KeyError:
+        return False
+
+
+def mirrored() -> list[str]:
+    """Everything the mirror is expected to carry."""
+    return [i.symbol for i in INSTRUMENTS if i.group not in DIRECT_GROUPS]
+
 
 def get(symbol: str) -> Instrument:
     try:

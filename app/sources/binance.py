@@ -31,6 +31,13 @@ from . import net
 URL = ("https://data.binance.vision/data/spot/monthly/klines/"
        "{sym}/1m/{sym}-1m-{y:04d}-{m:02d}.zip")
 
+#: The same bars, a day per file. Needed because the monthly archive for the
+#: month in progress is not published until the month ends — so a monthly-only
+#: fetch stops at the last day of last month, and the coins sit up to five
+#: weeks behind everything else in the catalogue while looking complete.
+DAY_URL = ("https://data.binance.vision/data/spot/daily/klines/"
+           "{sym}/1m/{sym}-1m-{y:04d}-{m:02d}-{d:02d}.zip")
+
 
 def _parse_csv(raw: bytes, point: float) -> np.ndarray:
     lines = raw.split(b"\n")
@@ -67,16 +74,54 @@ def _parse_csv(raw: bytes, point: float) -> np.ndarray:
     return bars
 
 
-def fetch_month(code: str, year: int, month: int, point: float) -> np.ndarray:
-    blob = net.fetch(URL.format(sym=code, y=year, m=month))
+def _unzip(blob: bytes, what: str) -> bytes:
     if not blob.startswith(b"PK"):
-        raise net.NotFound(f"{code} {year}-{month:02d}: not an archive")
+        raise net.NotFound(f"{what}: not an archive")
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         names = [n for n in z.namelist() if n.lower().endswith(".csv")]
         if not names:
-            raise net.NotFound(f"{code} {year}-{month:02d}: archive holds no csv")
-        raw = z.read(names[0])
-    return _parse_csv(raw, point)
+            raise net.NotFound(f"{what}: archive holds no csv")
+        return z.read(names[0])
+
+
+def fetch_month(code: str, year: int, month: int, point: float) -> np.ndarray:
+    """A month of bars, however it has to be assembled.
+
+    The monthly archive when there is one; otherwise the days. A 404 here means
+    one of two very different things — the month has not been packaged yet, or
+    the coin did not exist — and only trying the days tells them apart.
+    """
+    try:
+        blob = net.fetch(URL.format(sym=code, y=year, m=month), attempts=3)
+        return _parse_csv(_unzip(blob, f"{code} {year}-{month:02d}"), point)
+    except net.NotFound:
+        return _fetch_days(code, year, month, point)
+
+
+def _fetch_days(code: str, year: int, month: int, point: float) -> np.ndarray:
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta
+
+    day = date(year, month, 1)
+    days = []
+    while day.month == month and day <= date.today():
+        days.append(day)
+        day += timedelta(days=1)
+
+    def one(d: date):
+        try:
+            blob = net.fetch(DAY_URL.format(sym=code, y=d.year, m=d.month,
+                                            d=d.day), attempts=2)
+            return _parse_csv(_unzip(blob, f"{code} {d}"), point)
+        except net.NotFound:
+            return None                 # today's file, or before the coin listed
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        parts = [b for b in pool.map(one, days) if b is not None and len(b)]
+
+    if not parts:
+        raise net.NotFound(f"{code} {year}-{month:02d}: no monthly or daily files")
+    return np.concatenate(parts)
 
 
 def months_in(start: date, end: date):
