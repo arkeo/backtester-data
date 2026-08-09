@@ -118,6 +118,28 @@ jobs:
           gh release edit history \
             --notes "Updated $(date -u '+%Y-%m-%d %H:%M') UTC. Sealed; opens only in the application."
 
+      # GitHub switches off a scheduled workflow after 60 days with no
+      # *commits* to the repository. Publishing releases does not count, so
+      # without this the whole thing would quietly stop about two months from
+      # now, with nothing broken and no obvious reason. A dated line committed
+      # every couple of weeks keeps the clock reset.
+      - name: Keep the schedule alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LAST=$(git log -1 --format=%ct)
+          AGE=$(( ( $(date +%s) - LAST ) / 86400 ))
+          echo "last commit was $AGE days ago"
+          if [ "$AGE" -ge 14 ]; then
+            date -u '+Last automatic update: %Y-%m-%d %H:%M UTC' > LAST-UPDATE.txt
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add LAST-UPDATE.txt
+            git commit -m "Keep the schedule alive" && git push
+          else
+            echo "recent enough; nothing to do"
+          fi
+
       - name: Say where it is
         run: |
           echo "Mirror address for the application:" >> $GITHUB_STEP_SUMMARY
