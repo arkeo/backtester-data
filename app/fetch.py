@@ -123,7 +123,13 @@ def plan(symbol: str, start: date | None = None, end: date | None = None) -> lis
     if inst.source == "histdata":
         return [str(y) for y in range(start.year, end.year + 1)]
     if inst.source == "binance":
-        return [f"{y:04d}-{m:02d}" for y, m in binance.months_in(start, end)]
+        months = [f"{y:04d}-{m:02d}" for y, m in binance.months_in(start, end)]
+        # For the generated pairs the exact span is known, so months that were
+        # never published are not asked for at all. A coin listed last year
+        # would otherwise open with eighty 404s.
+        if inst.first_month:
+            months = [u for u in months if u >= inst.first_month]
+        return months
     if inst.source == "dukascopy":
         return [d.isoformat() for d in dukascopy.days_in(start, end)]
     raise ValueError(f"unknown source {inst.source!r}")
@@ -319,11 +325,32 @@ class Progress:
             }
 
 
+def settle_step(symbol: str, progress: "Progress | None" = None):
+    """Make sure the instrument's price step is known before anything is stored.
+
+    Bars are kept as integers scaled by that step, so a wrong one is not a
+    display problem — it is the wrong number written to disk. The generated
+    pairs do not come with it, so the first download measures it from a real
+    month and it is remembered from then on.
+    """
+    inst = catalog.get(symbol)
+    if inst.point:
+        return inst
+    if progress:
+        with progress.lock:
+            progress.message = "working out the price step"
+    month = inst.last_month or inst.first_month
+    if not month:
+        raise ValueError(f"{symbol} has no published months to measure")
+    catalog.remember_step(inst.symbol, binance.detect_point(inst.code, month))
+    return catalog.get(symbol)
+
+
 def download(symbol: str, start: date | None = None, end: date | None = None,
              workers: int | None = None, progress: Progress | None = None,
              deadline: float | None = None) -> dict:
     """Fetch everything missing for ``symbol`` and fold it into the store."""
-    inst = catalog.get(symbol)
+    inst = settle_step(symbol, progress)
     workers = workers or workers_for(inst)
     units = pending(symbol, plan(symbol, start, end))
     prog = progress or Progress(symbol, len(units))
@@ -459,12 +486,17 @@ PRIORITY = [
 ]
 
 
+#: Built once. It used to rebuild the whole catalogue order on every call, and
+#: a call happens per comparison inside a sort — which was invisible with
+#: seventy instruments and quadratic with three and a half thousand.
+_RANK = {i.symbol: n for n, i in enumerate(catalog.INSTRUMENTS)}
+_FIRST = {s: n for n, s in enumerate(PRIORITY)}
+
+
 def priority(symbol: str) -> tuple[int, int]:
-    try:
-        return (0, PRIORITY.index(symbol))
-    except ValueError:
-        order = [i.symbol for i in catalog.INSTRUMENTS]
-        return (1, order.index(symbol) if symbol in order else 999)
+    if symbol in _FIRST:
+        return (0, _FIRST[symbol])
+    return (1, _RANK.get(symbol, 10 ** 9))
 
 
 def _cli():

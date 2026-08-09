@@ -112,6 +112,19 @@ def prune(index: dict, tag: str, do_upload: bool) -> list[str]:
     return gone
 
 
+#: How many units a backfill must manage before it is worth attempting again.
+#:
+#: A day-served source refuses this machine's addresses outright — measured:
+#: thirty-nine attempts in twenty-five minutes and not one bar, against
+#: fifty-one days in seven minutes from an ordinary connection. Retrying that
+#: every three hours costs the whole slice and achieves nothing, and worse, it
+#: hides the fact that the instrument is not being filled at all behind a run
+#: that looks busy. Recorded once, it is skipped until the backlog moves,
+#: which is what happens when the history is published from somewhere that can
+#: reach the source.
+STALLED_AFTER = 2
+
+
 def choose(symbols: list[str], index: dict) -> list[str]:
     """Which instruments this run should touch, most useful first.
 
@@ -123,6 +136,13 @@ def choose(symbols: list[str], index: dict) -> list[str]:
     for symbol in symbols:
         entry = index.get(symbol)
         if entry is None or entry.get("backlog", 1) > 0:
+            if entry and entry.get("stalled", 0) >= STALLED_AFTER:
+                # Still needs the history; this machine simply cannot fetch it.
+                # It is topped up with the newest days like anything else,
+                # which is affordable, and the backfill comes from elsewhere.
+                if _age_hours(entry) > REFRESH_HOURS:
+                    stale.append(symbol)
+                continue
             missing.append(symbol)
         elif _age_hours(entry) > REFRESH_HOURS:
             stale.append(symbol)
@@ -159,7 +179,8 @@ def restore(symbol: str, base_url: str, entry: dict | None) -> int:
     return store.bar_count(symbol)
 
 
-def seal(symbol: str, out_dir: str) -> dict | None:
+def seal(symbol: str, out_dir: str, was: dict | None = None,
+         gained: int = 0) -> dict | None:
     """Write the sealed bundle for one instrument and describe it."""
     meta = store.read_meta(symbol)
     if not meta.get("bars"):
@@ -179,6 +200,10 @@ def seal(symbol: str, out_dir: str) -> dict | None:
         # this instrument is finished being backfilled without downloading it
         # first to look.
         "backlog": backlog(symbol),
+        # Consecutive runs that tried to backfill this and got nowhere. Reset
+        # by any progress at all, so a source having a bad hour costs one
+        # slice rather than being written off.
+        "stalled": 0 if gained > 0 else (was or {}).get("stalled", 0) + 1,
     }
 
 
@@ -278,10 +303,12 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             if had:
                 print(f"  restored {had:,} bars from the mirror", flush=True)
 
+            before = store.bar_count(symbol)
             prog = _with_ticker(
                 symbol, slice_for(deadline, len(todo) - done_so_far))
 
-            fresh = seal(symbol, out_dir)
+            fresh = seal(symbol, out_dir, was=entry,
+                         gained=store.bar_count(symbol) - before)
             if fresh is None:
                 print("  nothing to publish", flush=True)
                 if prog.failed:
@@ -296,10 +323,15 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
 
             first = store.from_unix(fresh["first"]).date() if fresh["first"] else "-"
             last = store.from_unix(fresh["last"]).date() if fresh["last"] else "-"
+            stalled = (f"  STALLED x{fresh['stalled']}" if fresh["stalled"] else "")
             print(f"  {fresh['bars']:,} bars  {first} .. {last}  "
                   f"{fresh['bytes'] / 1e6:.0f} MB  "
-                  f"backlog={fresh['backlog']}  ({time.time() - started:.0f}s)",
-                  flush=True)
+                  f"backlog={fresh['backlog']}{stalled}"
+                  f"  ({time.time() - started:.0f}s)", flush=True)
+            if fresh["stalled"] >= STALLED_AFTER:
+                print(f"::warning::{symbol} cannot be backfilled from this "
+                      f"machine; publish it from one that can reach the source",
+                      flush=True)
 
             # The listing goes up after every instrument rather than at the
             # end. A run that dies half way then still leaves a mirror that

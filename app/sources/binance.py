@@ -124,6 +124,50 @@ def _fetch_days(code: str, year: int, month: int, point: float) -> np.ndarray:
     return np.concatenate(parts)
 
 
+#: An int32 holds about 2.1e9, and prices are stored as `price / point`. A step
+#: fine enough for a coin worth a millionth of a cent would overflow that for
+#: one worth a hundred thousand dollars, so the step is also bounded by the
+#: largest price seen.
+_HEADROOM = 2.0e9
+
+
+def detect_point(code: str, month: str) -> float:
+    """Work out a pair's price step by looking at its prices.
+
+    There are thousands of pairs and no listing anywhere that gives their tick
+    sizes, so it is measured instead: the archive writes prices as decimal
+    strings, and the finest place any of them actually uses is the step. A
+    coin quoted to eight decimals and one quoted to two are then both stored
+    exactly, rather than one of them being rounded to nothing.
+    """
+    y, m = month.split("-")
+    blob = net.fetch(URL.format(sym=code, y=int(y), m=int(m)))
+    raw = _unzip(blob, f"{code} {month}")
+
+    decimals = 0
+    biggest = 0.0
+    for line in raw.split(b"\n"):
+        if not line or line[0] not in b"0123456789":
+            continue
+        f = line.split(b",")
+        if len(f) < 5:
+            continue
+        for field in f[1:5]:
+            text = field.decode("ascii", "ignore").strip()
+            if "." in text:
+                # Trailing zeros are padding, not precision.
+                decimals = max(decimals, len(text.split(".")[1].rstrip("0")))
+        try:
+            biggest = max(biggest, float(f[2]))
+        except ValueError:
+            continue
+
+    point = 10.0 ** -min(decimals, 8)
+    while biggest and biggest / point > _HEADROOM:
+        point *= 10.0
+    return point
+
+
 def months_in(start: date, end: date):
     y, m = start.year, start.month
     while (y, m) <= (end.year, end.month):
