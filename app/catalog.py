@@ -148,8 +148,14 @@ INSTRUMENTS += [
 # codes were checked and none exist. It comes from Dukascopy, which since it
 # serves one M1 file per day is perfectly affordable.
 INSTRUMENTS += [
+    # 2013, not 2012. The feed answers for every weekday back to 2012 but
+    # returns no bars at all before the last days of September 2013 — measured
+    # over the full backfill: 3,808 days fetched, none of the first 440
+    # carrying a single candle. Claiming the earlier year cost those 440
+    # requests on every fresh download and overstated what the instrument
+    # offers.
     Instrument("US30", "Dow Jones 30", "indices", 0.001, 2,
-               "dukascopy", "USA30IDXUSD", 2012, contract=1.0, duka="USA30IDXUSD"),
+               "dukascopy", "USA30IDXUSD", 2013, contract=1.0, duka="USA30IDXUSD"),
     Instrument("US500", "S&P 500", "indices", 0.001, 2,
                "histdata", "spxusd", 2010, contract=1.0, duka="USA500IDXUSD"),
     Instrument("USTEC", "Nasdaq 100", "indices", 0.001, 2,
