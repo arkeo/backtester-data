@@ -88,9 +88,21 @@ def backlog(symbol: str) -> int:
     return sum(1 for u in fetch.plan(symbol) if u not in known)
 
 
+def _checked_at(entry: dict) -> float:
+    return entry.get("refreshed") or entry.get("last") or 0
+
+
 def _age_hours(entry: dict) -> float:
-    last = entry.get("last") or 0
-    return (time.time() - last) / 3600.0
+    """How long since this instrument was last *looked at*.
+
+    Not how old its newest bar is. Those are different questions and using the
+    second for the first meant every instrument was permanently overdue: the
+    newest bar on a Friday close is two days old all weekend, so a catalogue
+    that was completely up to date still reported all sixty-three as stale and
+    re-fetched, re-sealed and re-uploaded three gigabytes of it every three
+    hours, for nothing.
+    """
+    return (time.time() - _checked_at(entry)) / 3600.0
 
 
 def prune(index: dict, tag: str, do_upload: bool) -> list[str]:
@@ -150,7 +162,7 @@ def choose(symbols: list[str], index: dict) -> list[str]:
     missing.sort(key=fetch.priority)
     # Oldest first, so nothing can be left behind indefinitely by a run that
     # only ever gets through the front of the list.
-    stale.sort(key=lambda s: index[s].get("last") or 0)
+    stale.sort(key=lambda s: _checked_at(index[s]))
     return missing + stale
 
 
@@ -185,6 +197,7 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
     meta = store.read_meta(symbol)
     if not meta.get("bars"):
         return None
+    left = backlog(symbol)
     from . import crypt
     name = crypt.name_for(symbol, portable.publisher_key())
     r = portable.export([symbol], os.path.join(out_dir, name), seal=True)
@@ -199,11 +212,18 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
         # Not read by the application. It is how the next run knows whether
         # this instrument is finished being backfilled without downloading it
         # first to look.
-        "backlog": backlog(symbol),
+        "backlog": left,
         # Consecutive runs that tried to backfill this and got nowhere. Reset
         # by any progress at all, so a source having a bad hour costs one
         # slice rather than being written off.
-        "stalled": 0 if gained > 0 else (was or {}).get("stalled", 0) + 1,
+        #
+        # Only counted while there is a backlog: an instrument that is already
+        # complete gains nothing on a quiet weekend and is not stalled, it is
+        # finished. Counting those marked the whole catalogue as stuck.
+        "stalled": 0 if (gained > 0 or not left)
+                   else (was or {}).get("stalled", 0) + 1,
+        # When this was last checked, which is what staleness means.
+        "refreshed": int(time.time()),
     }
 
 
