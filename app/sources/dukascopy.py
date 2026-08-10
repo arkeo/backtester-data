@@ -52,6 +52,47 @@ URL = ("https://datafeed.dukascopy.com/datafeed/{sym}/{y:04d}/{m:02d}/{d:02d}/"
 REC = struct.Struct(">IIIIIf")   # offset_seconds, open, close, low, high, volume
 REC_SIZE = REC.size              # 24
 
+#: The same feed also serves raw ticks, one file per HOUR. Same compression,
+#: a different record: milliseconds into the hour, then ask and bid as scaled
+#: integers, then the two volumes.
+TICK_URL = ("https://datafeed.dukascopy.com/datafeed/{sym}/{y:04d}/{m:02d}/"
+            "{d:02d}/{h:02d}h_ticks.bi5")
+TICK = struct.Struct(">IIIff")   # ms_into_hour, ask, bid, ask_volume, bid_volume
+TICK_SIZE = TICK.size            # 20
+
+
+def fetch_hour_ticks(duka_symbol: str, when, point: float, scale: int) -> np.ndarray:
+    """Every tick of one hour, as ``(t, bid, ask)`` in stored integers.
+
+    An hour of a busy pair is a few thousand ticks — perhaps fifty kilobytes —
+    against fifteen for a whole day of minutes. That ratio is why this is
+    fetched for the hour being traded rather than downloaded with the history:
+    a year of ticks is gigabytes per instrument, and almost all of it would be
+    for minutes nobody ever looks at.
+    """
+    url = TICK_URL.format(sym=duka_symbol, y=when.year, m=when.month - 1,
+                          d=when.day, h=when.hour)
+    raw = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(net.fetch(url))
+    n = len(raw) // TICK_SIZE
+    if n == 0:
+        return np.empty(0, dtype=store.TICK)
+
+    dt = np.dtype([("ms", ">u4"), ("ask", ">u4"), ("bid", ">u4"),
+                   ("av", ">f4"), ("bv", ">f4")])
+    rows = np.frombuffer(raw[: n * TICK_SIZE], dtype=dt)
+
+    # Seconds since the epoch for the top of that hour. Built by hand rather
+    # than through numpy's parser, which refuses to look at an offset and
+    # warns about it instead of using it.
+    base = int(when.replace(minute=0, second=0, microsecond=0).timestamp())
+    conv = 1.0 / (scale * point)
+
+    out = np.empty(n, dtype=store.TICK)
+    out["t"] = base + (rows["ms"].astype(np.int64) // 1000)
+    out["bid"] = np.rint(rows["bid"].astype(np.float64) * conv)
+    out["ask"] = np.rint(rows["ask"].astype(np.float64) * conv)
+    return out
+
 
 def scale_for(inst) -> int:
     """The power of ten Dukascopy scales this instrument's prices by."""

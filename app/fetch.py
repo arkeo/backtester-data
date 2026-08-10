@@ -221,6 +221,11 @@ def _fetch_from(source: str, inst, unit: str) -> np.ndarray:
     raise ValueError(source)
 
 
+#: The first year the day-served feed has anything at all. Measured: 2003 for
+#: every instrument sampled, and nothing before it.
+DAY_FEED_FROM = 2003
+
+
 def _dukascopy_year(inst, year: int) -> np.ndarray:
     """One HistData year rebuilt from Dukascopy's per-day files."""
     today = datetime.now(timezone.utc).date()
@@ -228,24 +233,79 @@ def _dukascopy_year(inst, year: int) -> np.ndarray:
     end = min(date(year, 12, 31), today)
     if start > end:
         raise net.NotFound(f"{inst.symbol} {year}: in the future")
+    if year < DAY_FEED_FROM:
+        raise net.NotFound(f"{inst.symbol} {year}: before this feed begins")
 
     scale = dukascopy.scale_for(inst)
+
+    # Ask a few days before committing to the whole year. Walking a year that
+    # nobody has costs two hundred and fifty requests to learn nothing, and
+    # now that a missing year here is tried for every instrument rather than
+    # only as a fallback, that would be most of the run.
+    #
+    # Each probe date is moved forward to a weekday. Fixed dates were wrong in
+    # a way that produced a confident false answer: in a year where all four
+    # happened to be weekends every one was skipped, the loop finished having
+    # asked nothing, and the year was declared empty.
+    probes = []
+    for month, day in ((3, 12), (6, 11), (9, 10), (11, 12)):
+        d = date(year, month, day)
+        while d.weekday() > 4:
+            d += timedelta(days=1)
+        if d <= end:
+            probes.append(d)
+
+    asked = False
+    found = False
+    for probe in probes:
+        try:
+            found = len(dukascopy.fetch_day(inst.duka, probe, inst.point, scale)) > 0
+            asked = True
+            if found:
+                break
+        except net.NotFound:
+            asked = True
+        except Exception:                          # noqa: BLE001
+            # A failing request is not evidence of absence, so the year is
+            # walked rather than written off on a bad connection.
+            found = True
+            break
+
+    if asked and not found:
+        raise net.NotFound(f"{inst.symbol} {year}: nothing on the day feed")
+
     days = list(dukascopy.days_in(start, end))
     parts: list[np.ndarray] = []
+    failed = 0
 
     def one(day):
+        # A day that errors is not the same as a day that is empty. Letting it
+        # escape abandoned the entire year on a single 503 — and this feed
+        # refuses about a fifth of requests, so on a long backfill that was
+        # nearly every year.
+        nonlocal failed
         try:
             return dukascopy.fetch_day(inst.duka, day, inst.point, scale)
         except net.NotFound:
             return None
+        except Exception:                          # noqa: BLE001
+            failed += 1
+            return None
 
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=workers_for(inst)) as pool:
         for bars in pool.map(one, days):
             if bars is not None and len(bars):
                 parts.append(bars)
 
     if not parts:
-        raise net.NotFound(f"{inst.symbol} {year}: nothing on Dukascopy either")
+        raise net.NotFound(f"{inst.symbol} {year}: nothing on the day feed")
+
+    # A year that mostly failed must not be recorded as fetched, or its holes
+    # become permanent — the manifest would call it done and never ask again.
+    # A few stragglers are tolerated; a bad connection is not.
+    if failed > max(3, len(days) // 10):
+        raise RuntimeError(
+            f"{inst.symbol} {year}: {failed} of {len(days)} days failed")
     return np.concatenate(parts)
 
 
@@ -262,12 +322,18 @@ def _fetch_unit(inst, unit: str, prog: "Progress | None" = None) -> np.ndarray:
                 with prog.lock:
                     prog.message = "the usual route is down; trying another"
             return bars
-        except net.NotFound:
-            # The period genuinely does not exist at this source. That is an
-            # answer, not a failure, and it does not mean the site is down.
+        except net.NotFound as e:
+            # This source does not have the period. That is an answer about
+            # this source, and it used to be treated as an answer about the
+            # instrument — so a year the yearly feed never carried was written
+            # off without ever asking the day-served one, which in many cases
+            # has it. Measured: three pairs sampled at random each began one
+            # to three years earlier there than the history we were publishing.
+            #
+            # It is still an answer, so the source is not marked as failing.
             if source == "histdata":
                 HISTDATA.record(True)
-            raise
+            last = e
         except Exception as e:                      # noqa: BLE001
             if source == "histdata":
                 HISTDATA.record(False)

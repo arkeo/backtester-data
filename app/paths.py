@@ -171,6 +171,17 @@ def sessions_dir() -> str:
     return os.path.join(root(), "sessions")
 
 
+def indicators_dir() -> str:
+    """Where indicators added by hand live.
+
+    In the profile rather than beside the executable, because that folder is
+    read-only once the application is installed under Program Files — and
+    because these belong to the person, not to the installation, so they
+    survive an upgrade.
+    """
+    return os.path.join(_profile_root(), "indicators")
+
+
 def web_dir() -> str:
     """The UI files, which PyInstaller unpacks beside the temporary bundle."""
     if FROZEN:

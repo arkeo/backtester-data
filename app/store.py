@@ -36,6 +36,15 @@ BAR = np.dtype([
     ("sp", "<u4"), ("v", "<u4"),
 ])
 
+#: A tick, as the simulator needs it: a moment and the two prices that were
+#: quotable at it. Volumes are dropped — nothing here prices anything by them,
+#: and they would double the size of a file fetched over somebody's connection
+#: while a trade is waiting.
+TICK = np.dtype([
+    ("t", "<u4"),
+    ("bid", "<i4"), ("ask", "<i4"),
+])
+
 MINUTE = 60
 TIMEFRAMES = {
     "M1": 1 * MINUTE,

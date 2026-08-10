@@ -213,6 +213,15 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
         # this instrument is finished being backfilled without downloading it
         # first to look.
         "backlog": left,
+        # From when real quotes inside the minute can be had.
+        #
+        # The tick files come from the day-served feed, which begins in 2003
+        # and carries every instrument in the catalogue except the coins. So
+        # the answer is the later of that year and the instrument's own start
+        # — and it is recorded here rather than probed by the application,
+        # which would be thousands of requests to learn something that changes
+        # once a decade.
+        "ticks_from": _ticks_from(symbol, meta),
         # Consecutive runs that tried to backfill this and got nowhere. Reset
         # by any progress at all, so a source having a bad hour costs one
         # slice rather than being written off.
@@ -225,6 +234,16 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
         # When this was last checked, which is what staleness means.
         "refreshed": int(time.time()),
     }
+
+
+def _ticks_from(symbol: str, meta: dict) -> int | None:
+    """The first year this instrument has ticks for, or None if it has none."""
+    inst = catalog.get(symbol)
+    if not (inst.duka or inst.source == "dukascopy"):
+        return None
+    first = meta.get("first")
+    began = store.from_unix(first).year if first else fetch.DAY_FEED_FROM
+    return max(fetch.DAY_FEED_FROM, began)
 
 
 def forget(symbol: str) -> None:
