@@ -157,7 +157,7 @@ gh variable set MINUTES --repo "%GHUSER%/backtester-data" --body "150" >nul 2>&1
 rem No YEARS setting any more: every instrument is fetched back as far as its
 rem source goes, which for the currency pairs is the year 2000.
 gh variable delete YEARS --repo "%GHUSER%/backtester-data" >nul 2>&1
-echo         All 71 instruments, full history.
+echo         All 63 published instruments, full history.
 
 echo.
 echo   [7/7] Starting the first update...

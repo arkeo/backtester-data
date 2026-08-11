@@ -17,4 +17,10 @@ PUBLISHER-PRIVATE.key
 PUBLISHER-PUBLIC.txt
 CONTENT-KEYS.json
 *.btlicence
+
+# The signed list of mirrors. Built here and uploaded to the release, not
+# committed: in the repository it would be one more thing to keep in step with
+# what is actually being served, and the copy that matters is the one on the
+# release. It was ignored by hand once and regenerating this file quietly took
+# the line away again, which is why it is in the template now.
 m.bin

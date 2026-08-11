@@ -89,6 +89,18 @@ jobs:
         env:
           BACKTESTER_DATA: ${{ github.workspace }}/data
           BACKTESTER_KEY: ${{ secrets.BACKTESTER_KEY }}
+          # This is what makes a licence worth buying. Without it the job seals
+          # everything with the publisher key above, which is compiled into
+          # every copy of the application — so the whole archive opens whether
+          # anyone has paid or not.
+          #
+          # It has to carry a key for the *current* month. If it does not, the
+          # job stops with a message rather than falling back to the publisher
+          # key, because falling back would give the catalogue away and look
+          # exactly like a successful run. Add next month's with
+          #   python installer/make_licence_keys.py month
+          # and update this secret.
+          BACKTESTER_CONTENT_KEYS: ${{ secrets.BACKTESTER_CONTENT_KEYS }}
           # One instrument at a time never needs more than a fraction of a
           # gigabyte, and this machine has nothing like a desktop's free space.
           BACKTESTER_MIN_FREE_GB: "2"

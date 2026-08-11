@@ -204,6 +204,33 @@ def restore(symbol: str, base_url: str, entry: dict | None) -> int:
     return store.bar_count(symbol)
 
 
+def _stale(old: dict | None, new: dict) -> bool:
+    """Whether a piece has to go up again.
+
+    Almost always the answer is "only if the bars changed", and it has to stay
+    that way: a piece re-sealed for any other reason draws a fresh nonce, and
+    every mirror downstream reads the new bytes as new data. Re-sealing all
+    three pieces monthly, when the content key rotates, would push the whole
+    3.4 GB catalogue every month and undo the entire point of splitting it.
+
+    The one exception is the switch-on. Everything published before content
+    keys existed is sealed with the publisher key, which is compiled into every
+    copy of the application — so it opens with or without a licence. Those
+    pieces are re-sealed **once**, the first time a monthly key is in force,
+    and then never again for this reason: a piece keeps whichever month sealed
+    it, and a licence carries every period up to its expiry, so a bundle sealed
+    in 2026 still opens for somebody who subscribes in 2028.
+
+    Without this the archive would have stayed readable by anyone until it
+    happened to change on its own — which for the pre-2026 piece is 1 January.
+    """
+    if old is None:
+        return True
+    if old.get("sha") != new.get("sha"):
+        return True
+    return not old.get("key") and bool(new.get("key"))
+
+
 def seal(symbol: str, out_dir: str, was: dict | None = None,
          gained: int = 0) -> dict | None:
     """Write the sealed bundle for one instrument and describe it."""
@@ -386,8 +413,8 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             # is byte-identical would push a new random nonce, which every
             # mirror downstream would read as new data — reintroducing the
             # very cost the split was made to remove.
-            had = {p["part"]: p["sha"] for p in (entry or {}).get("parts", [])}
-            moved = [p for p in fresh["parts"] if had.get(p["part"]) != p["sha"]]
+            had = {p["part"]: p for p in (entry or {}).get("parts", [])}
+            moved = [p for p in fresh["parts"] if _stale(had.get(p["part"]), p)]
             if do_upload:
                 for p in moved:
                     upload(os.path.join(out_dir, p["file"]), tag)

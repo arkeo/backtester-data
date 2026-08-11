@@ -29,6 +29,8 @@ import numpy as np
 
 from . import crypt, paths, store
 
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 MANIFEST = "bundle.json"
 SUFFIX = ".btdata"
 
@@ -62,6 +64,72 @@ def publisher_key() -> bytes:
         return KEY.encode() if isinstance(KEY, str) else KEY
     except ImportError:
         return DEFAULT_KEY
+
+
+def content_keys_available() -> dict:
+    """The publisher's month-by-month sealing keys, if this copy has them.
+
+    Publisher side only. A customer's machine never sees this file — it gets
+    the handful of keys its licence carries, and nothing else.
+    """
+    raw = os.environ.get("BACKTESTER_CONTENT_KEYS", "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise SystemExit("BACKTESTER_CONTENT_KEYS is not valid JSON")
+    for path in (os.path.join(os.path.dirname(APP_ROOT), "CONTENT-KEYS.json"),
+                 os.path.join(APP_ROOT, "CONTENT-KEYS.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def period_now() -> str:
+    at = datetime.now(timezone.utc)
+    return f"{at.year:04d}-{at.month:02d}"
+
+
+def sealing_key(period: str | None = None) -> tuple[bytes, str]:
+    """The key to seal with now, and the period it belongs to.
+
+    Sealing rotates monthly; **naming does not**. Two different jobs:
+
+      * the filename comes from the publisher key, which never changes, so a
+        piece that has not changed keeps its name and nobody re-downloads it.
+        Deriving names from the rotating key instead would rename all 191
+        files every month and cost every mirror the whole archive — undoing
+        exactly what splitting it into pieces was for.
+
+      * the *contents* are sealed with this month's key, so a subscription
+        that lapses stops opening anything published afterwards. That is the
+        part a cracker cannot remove: there is no check to delete, the bytes
+        simply do not decode.
+
+    Falls back to the publisher key where no monthly keys exist, so a source
+    checkout still publishes something readable.
+    """
+    keys = content_keys_available()
+    period = period or period_now()
+    hexed = keys.get(period)
+    if hexed:
+        return bytes.fromhex(hexed), period
+
+    if keys:
+        # Keys exist but not for this month. That is a forgotten `month` step,
+        # not a reason to carry on: falling back here would seal the whole
+        # catalogue with the key compiled into every copy of the application,
+        # silently handing away everything the rotation exists to protect —
+        # and nothing downstream would look any different.
+        raise SystemExit(
+            f"No content key for {period}.\n"
+            "  Run: python installer/make_licence_keys.py month\n"
+            "  then update the publisher's BACKTESTER_CONTENT_KEYS secret.\n"
+            "  Refusing to publish with the built-in key instead.")
+    return publisher_key(), ""
 
 
 #: Files that belong in a bundle. Everything else in an instrument's folder is
@@ -113,7 +181,8 @@ def part_bounds(now: int | None = None) -> dict[str, tuple[int, int]]:
 
 
 def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
-           span: tuple[int, int] | None = None) -> dict:
+           span: tuple[int, int] | None = None,
+           seal_key: bytes | None = None) -> dict:
     """Pack the given instruments into one file.
 
     With `span`, only bars in [start, end) go in, and the result is made
@@ -233,7 +302,7 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
     # "everything changed" every single night. This describes the contents.
     digest = hashlib.sha256(payload).hexdigest()[:16]
     if seal:
-        payload = crypt.encrypt(payload, publisher_key())
+        payload = crypt.encrypt(payload, seal_key or publisher_key())
     tmp = dest + ".part"
     with open(tmp, "wb") as f:
         f.write(payload)
@@ -437,18 +506,22 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True,
     if not len(bars):
         raise ValueError(f"{symbol} has no bars to publish")
 
+    key, period = sealing_key()
     parts = []
     for part, (lo_t, hi_t) in part_bounds(now).items():
         lo = int(np.searchsorted(bars["t"], lo_t))
         hi = int(np.searchsorted(bars["t"], hi_t))
         if hi <= lo:
             continue                  # nothing in this span; no file for it
+        # Named from the publisher key, which never changes; sealed with this
+        # month's, which does. Doing both from the rotating key would rename
+        # every file every month.
         name = (crypt.name_for(f"{symbol}#{part}", publisher_key()) if seal
                 else f"{symbol}-{part}{SUFFIX}")
         r = export([symbol], os.path.join(out_dir, name), seal=seal,
-                   span=(lo_t, hi_t))
+                   span=(lo_t, hi_t), seal_key=key)
         parts.append({"part": part, "file": name, "bytes": r["bytes"],
-                      "bars": hi - lo, "sha": r["sha"]})
+                      "bars": hi - lo, "sha": r["sha"], "key": period})
 
     return {
         "symbol": symbol,
