@@ -116,10 +116,13 @@ def prune(index: dict, tag: str, do_upload: bool) -> list[str]:
     from . import crypt
     gone = [s for s in index if catalog.is_direct(s)]
     for symbol in gone:
-        name = index.pop(symbol)["file"]
-        if do_upload:
-            subprocess.run(["gh", "release", "delete-asset", tag, name, "--yes"],
-                           check=False)
+        # Every file the entry owned. An instrument is a set of year files now,
+        # and deleting only the first would leave the rest on the release for
+        # ever, paid for and pointing at nothing.
+        for name in portable.files_in(index.pop(symbol)):
+            if do_upload:
+                subprocess.run(["gh", "release", "delete-asset", tag, name,
+                                "--yes"], check=False)
         print(f"  removed {symbol} from the mirror")
     return gone
 
@@ -176,18 +179,23 @@ def restore(symbol: str, base_url: str, entry: dict | None) -> int:
         return 0                                    # already here somehow
     if not entry:
         return 0                                    # never published
-    url = f"{base_url.rstrip('/')}/{entry['file']}"
     scratch = os.path.join(paths.root(), "incoming")
     os.makedirs(scratch, exist_ok=True)
-    tmp = os.path.join(scratch, entry["file"])
-    try:
-        net.download(url, tmp, timeout=180, attempts=3)
-        portable.import_bundle(tmp)
-    finally:
+    # Every piece: an instrument is a set of year files, and restoring only the
+    # first would leave this run believing the other years were never fetched —
+    # so it would fetch them all again from the sources, which is the whole
+    # cost this job exists to avoid.
+    for name in portable.files_in(entry):
+        tmp = os.path.join(scratch, name)
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
+            net.download(f"{base_url.rstrip('/')}/{name}", tmp,
+                         timeout=180, attempts=3)
+            portable.import_bundle(tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     return store.bar_count(symbol)
 
 
@@ -198,12 +206,17 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
     if not meta.get("bars"):
         return None
     left = backlog(symbol)
-    from . import crypt
-    name = crypt.name_for(symbol, portable.publisher_key())
-    r = portable.export([symbol], os.path.join(out_dir, name), seal=True)
+    # One file per calendar year, not one for the instrument.
+    #
+    # A single file had to be rewritten whole for every new trading day, so
+    # everyone mirroring the archive re-fetched all of it nightly to gain a
+    # day: over a thousand bytes moved per byte gained, and more than the
+    # server's whole monthly allowance. A finished year never changes, so only
+    # the current one is rewritten now.
+    r = portable.publish_one(symbol, out_dir, seal=True)
     return {
         "symbol": symbol,
-        "file": name,
+        "years": r["years"],
         "bytes": r["bytes"],
         "bars": meta["bars"],
         "first": meta.get("first"),
@@ -354,9 +367,15 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
                     print(f"  {len(prog.failed)} failed, first: {prog.failed[0]}")
                 continue
 
-            path = os.path.join(out_dir, fresh["file"])
+            # Only the years that actually changed. Re-uploading a year that
+            # is byte-identical would push a new random nonce, which every
+            # mirror downstream would read as new data — reintroducing the
+            # very cost the split was made to remove.
+            had = {y["year"]: y["sha"] for y in (was or {}).get("years", [])}
+            moved = [y for y in fresh["years"] if had.get(y["year"]) != y["sha"]]
             if do_upload:
-                upload(path, tag)
+                for y in moved:
+                    upload(os.path.join(out_dir, y["file"]), tag)
             index[symbol] = fresh
             touched.append(symbol)
 
@@ -364,7 +383,9 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             last = store.from_unix(fresh["last"]).date() if fresh["last"] else "-"
             stalled = (f"  STALLED x{fresh['stalled']}" if fresh["stalled"] else "")
             print(f"  {fresh['bars']:,} bars  {first} .. {last}  "
-                  f"{fresh['bytes'] / 1e6:.0f} MB  "
+                  f"{fresh['bytes'] / 1e6:.0f} MB in {len(fresh['years'])} years, "
+                  f"{len(moved)} rewritten "
+                  f"({sum(y['bytes'] for y in moved) / 1e6:.1f} MB uploaded)  "
                   f"backlog={fresh['backlog']}{stalled}"
                   f"  ({time.time() - started:.0f}s)", flush=True)
             if fresh["stalled"] >= STALLED_AFTER:

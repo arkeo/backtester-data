@@ -55,6 +55,21 @@ def write_config(config: dict) -> None:
     os.replace(tmp, config_file())
 
 
+def language() -> str:
+    """Empty until the question has been answered, which is what asks it."""
+    return read_config().get("language", "")
+
+
+def set_language(code: str) -> str:
+    code = (code or "").strip().lower()
+    if code not in ("en", "fa"):
+        raise ValueError(f"unknown language {code!r}")
+    config = read_config()
+    config["language"] = code
+    write_config(config)
+    return code
+
+
 def proxy() -> str:
     return read_config().get("proxy", "")
 
@@ -78,22 +93,138 @@ def apply_saved_proxy() -> str:
     return saved
 
 
-def mirror() -> str:
-    """Where history comes from.
+def mirrors() -> list[dict]:
+    """Every history server this build knows about, in the order to try them.
 
-    Compiled into the build, so nobody has to be told an address and nothing
-    has to be typed in. A saved setting overrides it, which is what makes it
-    possible to move customers to a different address later without rebuilding
-    anything for them.
+    The first is a GitHub release: free, unmetered, and needing no machine kept
+    running. The second is our own server, which takes over when the first
+    cannot be reached — which for the customers this is sold to is often.
+
+    None of this is ever put to the customer. There is no setting for it and no
+    message about it: they press Download and history arrives. The switch is
+    decided while fetching the index, which is a few kilobytes, so by the time
+    a real download starts the working server is already known and the transfer
+    never has to restart in front of them.
+
+    An address typed in by hand comes first when there is one. That is not a
+    feature of the product — there is no box to type it in. It is the lever for
+    the day one customer needs to be pointed somewhere specific.
     """
-    chosen = read_config().get("mirror", "")
-    if chosen:
-        return chosen
+    out, seen = [], set()
+
+    def add(entry_id, name, url):
+        url = (url or "").strip().rstrip("/")
+        if url and url not in seen:
+            seen.add(url)
+            out.append({"id": entry_id, "name": name, "url": url})
+
+    add("custom", "Typed in by hand", read_config().get("mirror", ""))
+
+    # A signed list from the publisher, if one has been fetched. It comes
+    # before the compiled-in addresses because correcting them is its entire
+    # purpose — an address that moved after this copy was built is one the
+    # build cannot know about.
     try:
-        from ._key import MIRROR
-        return MIRROR
+        from . import endpoints
+        held = endpoints.cached()
+        for s in (held or {}).get("servers", []):
+            add(s.get("id", ""), s.get("name", ""), s.get("url", ""))
+    except Exception:                              # noqa: BLE001
+        pass
+
+    for entry in baked_mirrors():
+        add(entry["id"], entry["name"], entry["url"])
+    return out
+
+
+def baked_mirrors() -> list[dict]:
+    """Only the addresses compiled into this build.
+
+    Kept separate because the published list is fetched *from* these, and
+    reading it through `mirrors()` would mean asking an address the list itself
+    supplied — which is exactly the address that might be the broken one.
+    """
+    out = []
+    try:
+        from ._key import MIRRORS
+        for m in MIRRORS:
+            if m.get("url"):
+                out.append({"id": m.get("id", ""), "name": m.get("name", ""),
+                            "url": m["url"].rstrip("/")})
     except ImportError:
-        return ""
+        pass
+    if not out:
+        try:
+            # A build made before there was more than one. Without this it
+            # would lose the only address it had and downloads would stop.
+            from ._key import MIRROR
+            if MIRROR:
+                out.append({"id": "main", "name": "History server",
+                            "url": MIRROR.rstrip("/")})
+        except ImportError:
+            pass
+    return out
+
+
+def mirror_choice() -> str:
+    """Which one the user picked, or "auto" if they have not."""
+    return read_config().get("mirror_choice", "auto") or "auto"
+
+
+def set_mirror_choice(entry_id: str) -> str:
+    entry_id = (entry_id or "auto").strip()
+    known = {m["id"] for m in mirrors()} | {"auto"}
+    if entry_id not in known:
+        raise ValueError(f"no history server called {entry_id!r}")
+    config = read_config()
+    config["mirror_choice"] = entry_id
+    write_config(config)
+    return entry_id
+
+
+def mirror_order() -> list[dict]:
+    """The servers to try, in the order to try them.
+
+    On "auto" that is all of them, best first, with whichever last worked
+    promoted — so a customer whose international link is blocked pays the wait
+    once rather than at every download.
+
+    On an explicit choice it is that one alone. Falling through would quietly
+    undo the choice, and someone who picks a particular server is usually doing
+    it *because* the other one is wrong for them — stale, slow, or costing them
+    international traffic they are paying for.
+    """
+    picks = mirrors()
+    choice = mirror_choice()
+    if choice != "auto":
+        return [m for m in picks if m["id"] == choice] or picks[:1]
+
+    good = read_config().get("mirror_ok", "")
+    if good:
+        # A typed-in address stays in front of the remembered one. Remembering
+        # is a convenience; typing an address is an instruction, and the two
+        # must not be able to reverse each other.
+        picks.sort(key=lambda m: (m["id"] != "custom", m["id"] != good))
+    return picks
+
+
+def mirror() -> str:
+    """The one address downloads use right now.
+
+    Kept because most of the application only ever wants an address, and only
+    the two places that actually reach the network care that there is a list.
+    """
+    order = mirror_order()
+    return order[0]["url"] if order else ""
+
+
+def remember_mirror(entry_id: str) -> None:
+    """Note which server answered, so the next download starts there."""
+    config = read_config()
+    if config.get("mirror_ok") == entry_id:
+        return                                   # nothing to write, most calls
+    config["mirror_ok"] = entry_id
+    write_config(config)
 
 
 def set_mirror(url: str) -> str:

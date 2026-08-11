@@ -8,3 +8,13 @@ __pycache__/
 # and make the sealing worthless.
 YOUR-SECRET-KEY.txt
 MIRROR-ADDRESS.txt
+
+# The licensing keys. The private one mints licences this application will
+# accept, and the content keys decrypt every published bundle — this
+# repository is public, so committing either would hand away the whole thing
+# in a way no later commit could take back.
+PUBLISHER-PRIVATE.key
+PUBLISHER-PUBLIC.txt
+CONTENT-KEYS.json
+*.btlicence
+m.bin
