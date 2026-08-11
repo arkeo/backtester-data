@@ -88,18 +88,21 @@ def get(url: str, *, timeout: int = 60, attempts: int = 4) -> bytes:
 
 #: When each mirrored file was last written by the publisher.
 #:
-#: Kept one level *above* the mirror folder, not inside it. That folder is what
-#: the web server hands out, and this file lists every filename on the mirror —
-#: which is exactly the map the sealed index exists to withhold. Inside, it
-#: would have published in one request what sealing the index was meant to
-#: prevent, and it would have been deleted by the prune below every run for
-#: not appearing in the release listing.
+#: Inside the mirror folder, which is the only path the service unit may write
+#: to — `ProtectSystem=strict` with `ReadWritePaths=/srv/backtest/files`. Put a
+#: level above it, as this first was, every write fails; the failure is caught
+#: and printed, so nothing breaks loudly, and instead the record is simply
+#: never kept and all 3.4 GB is re-fetched every single week.
+#:
+#: The reason to have wanted it outside does not hold up. It lists filenames,
+#: and the filenames are hashes that are already public on the release this
+#: mirrors — anyone can read the same list from GitHub. What the sealed index
+#: withholds is which *instrument* each hash is, and that is not in here.
 STAMPS = "mirror-stamps.json"
 
 
 def _stamps_path(dest: str) -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(dest.rstrip("/\\"))),
-                        STAMPS)
+    return os.path.join(dest, STAMPS)
 
 
 def _stamps(dest: str) -> dict:
@@ -202,6 +205,12 @@ def main() -> int:
         path = os.path.join(dest, name)
         if name.endswith(PART):
             os.remove(path)                  # an interrupted run; start it again
+        elif name == STAMPS:
+            # Ours, not the publisher's. Left out of `have` because the tidying
+            # step at the end deletes everything in there that the release does
+            # not offer — and this file never appears in a release listing, so
+            # it would be deleted at the end of the very run that wrote it.
+            continue
         elif os.path.isfile(path):
             have[name] = os.path.getsize(path)
 
