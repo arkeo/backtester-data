@@ -21,6 +21,7 @@ import io
 import hashlib
 import json
 import os
+import time
 import zipfile
 from datetime import datetime, timezone
 
@@ -75,22 +76,50 @@ def _worth_sending(name: str) -> bool:
     return name in SENDABLE
 
 
-def _year_start(year: int) -> int:
-    return int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp())
+def _at(year: int, month: int = 1) -> int:
+    return int(datetime(year, month, 1, tzinfo=timezone.utc).timestamp())
 
 
-def year_of(when: int) -> int:
-    """The calendar year a bar belongs to, in UTC."""
-    return datetime.fromtimestamp(int(when), timezone.utc).year
+#: How a published instrument is cut up, newest piece last.
+#:
+#: Three pieces, of deliberately different sizes, because what a nightly update
+#: costs is the size of the piece that changed today — not how many pieces
+#: there are.
+#:
+#:   archive   everything before this year   rewritten once a year
+#:   year      January to the 1st of this month   rewritten once a month
+#:   month     this month so far            rewritten daily, and small
+#:
+#: Cutting by *equal* periods instead was the obvious idea and the wrong one.
+#: One file per year is the same nightly saving as this and needs 1,550 files;
+#: per week is 80,600 and per day 403,000, against a hard limit of 1,000 files
+#: on a GitHub release. Worse, the index naming them is fetched before anything
+#: can be decided — at weekly granularity that index is 10 MB, so a customer
+#: would download 10 MB to discover nothing had changed.
+PARTS = ("archive", "year", "month")
+
+
+def part_bounds(now: int | None = None) -> dict[str, tuple[int, int]]:
+    """Where each piece begins and ends, as unix seconds [start, end)."""
+    at = datetime.fromtimestamp(
+        int(time.time()) if now is None else int(now), timezone.utc)
+    year_start = _at(at.year)
+    month_start = _at(at.year, at.month)
+    return {
+        "archive": (0, year_start),
+        "year": (year_start, month_start),
+        "month": (month_start, 2 ** 31 - 1),
+    }
 
 
 def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
-           year: int | None = None) -> dict:
+           span: tuple[int, int] | None = None) -> dict:
     """Pack the given instruments into one file.
 
-    With `year`, only that calendar year's bars go in. That is what makes a
-    published archive updatable: a year that has ended never changes again, so
-    only the current one is rewritten when a new day arrives.
+    With `span`, only bars in [start, end) go in, and the result is made
+    reproducible — no clock, no instrument-wide totals — so that packing the
+    same bars twice produces the same bytes. That is what lets anyone
+    downstream tell "this piece changed" from "this piece was rebuilt".
     """
     symbols = [s.upper() for s in symbols]
     root = paths.data_dir()
@@ -107,7 +136,7 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
     described = []
     for symbol in present:
         meta = store.read_meta(symbol)
-        if year is None:
+        if span is None:
             described.append({
                 "symbol": symbol,
                 "bars": meta.get("bars", 0),
@@ -116,14 +145,14 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
                 "has_spread": meta.get("has_spread", False),
             })
             continue
-        # Year-scoped, so the description of 2011 does not move when 2026
-        # gains a day.
+        # Scoped to the span, so the description of the archive does not move
+        # when today's minute arrives.
         bars = store.load(symbol)
-        lo = int(np.searchsorted(bars["t"], _year_start(year)))
-        hi = int(np.searchsorted(bars["t"], _year_start(year + 1)))
+        lo = int(np.searchsorted(bars["t"], span[0]))
+        hi = int(np.searchsorted(bars["t"], span[1]))
         described.append({
             "symbol": symbol,
-            "year": year,
+            "span": list(span),
             "bars": hi - lo,
             "first": int(bars["t"][lo]) if hi > lo else None,
             "last": int(bars["t"][hi - 1]) if hi > lo else None,
@@ -131,7 +160,7 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
         })
 
     manifest = {"format": 1, "instruments": described}
-    if year is None:
+    if span is None:
         # A timestamp is useful on a bundle somebody exported by hand and
         # fatal on a published one: it changes every run, so every year's file
         # would differ every day even where not one bar had moved.
@@ -146,7 +175,7 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
         year's digest changed every night, and the split saved nothing at all.
         A fixed date is the earliest a zip can express.
         """
-        if year is None:
+        if span is None:
             z.writestr(name, data)
             return
         info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
@@ -165,7 +194,7 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
                 path = os.path.join(folder, name)
                 if not os.path.isfile(path):
                     continue
-                if year is None:
+                if span is None:
                     z.write(path, f"{symbol}/{name}")
                     continue
 
@@ -177,19 +206,19 @@ def export(symbols: list[str], dest: str, progress=None, seal: bool = False,
                 # customer re-downloaded the lot. The saving was exactly zero.
                 if name == "M1.bin":
                     bars = np.fromfile(path, dtype=store.BAR)
-                    lo = np.searchsorted(bars["t"], _year_start(year))
-                    hi = np.searchsorted(bars["t"], _year_start(year + 1))
+                    lo = np.searchsorted(bars["t"], span[0])
+                    hi = np.searchsorted(bars["t"], span[1])
                     put(z, f"{symbol}/M1.bin",
                         np.ascontiguousarray(bars[lo:hi]).tobytes())
                 elif name == "manifest.json":
-                    # Which periods are covered — sliced to this year, so it
-                    # still saves the receiver a re-fetch without dragging the
-                    # other years' coverage along.
-                    held = json.loads(open(path, "rb").read())
-                    put(z, f"{symbol}/manifest.json", json.dumps({
-                        k: sorted(x for x in held.get(k, [])
-                                  if str(x).startswith(str(year)))
-                        for k in ("done", "empty")}, indent=2))
+                    # Which periods are covered. Only on the newest piece:
+                    # it is instrument-wide, so putting it on the archive
+                    # would change the archive every time any period was
+                    # fetched — and the archive changing is the one thing
+                    # this whole arrangement exists to prevent.
+                    if span[1] >= 2 ** 31 - 1:
+                        with open(path, "rb") as fh:
+                            put(z, f"{symbol}/manifest.json", fh.read())
                 # meta.json is deliberately absent: it counts the whole
                 # instrument, so it changes whenever any year does, and the
                 # receiver rebuilds it from the merged bars anyway.
@@ -372,50 +401,59 @@ def publish(symbols: list[str], out_dir: str, progress=None,
             "bytes": sum(e["bytes"] for e in entries)}
 
 
-def publish_one(symbol: str, out_dir: str, seal: bool = True) -> dict:
-    """One instrument, as one sealed file per calendar year.
+def publish_one(symbol: str, out_dir: str, seal: bool = True,
+                now: int | None = None) -> dict:
+    """One instrument, as three sealed pieces: archive, year, month.
 
-    Why not one file for the whole instrument, which is simpler
-    ---------------------------------------------------------
-    Because it made every update cost the entire archive. Each instrument gains
-    a trading day every day; a single-file bundle is rewritten whole to hold
-    it, so anyone mirroring the archive re-downloaded 3.36 GB to collect about
-    40 KB of new bars — over a thousand times more bytes than it gained, and
-    more than a hundred gigabytes a month.
+    Why not one file, which is simpler
+    ----------------------------------
+    Because it made every update cost the whole archive. Each instrument gains
+    a trading day daily, a single-file bundle is rewritten whole to hold it, and
+    so anyone mirroring re-downloaded 3.36 GB to collect about 40 KB — over a
+    thousand bytes moved per byte gained, and 101 GB a month against a server
+    allowance of 100 GB.
 
-    Split by year, a year that has ended never changes again. Only the current
-    one is rewritten, which is about a twentieth of the traffic. The same
-    saving lands on every customer: updating means fetching this year, not
-    fetching everything since 2000 again.
+    Why three, and not one per year
+    -------------------------------
+    Because what a nightly update costs is the size of the piece that changed
+    today, not the number of pieces. One file per year gives exactly this
+    saving and needs 1,550 files; a GitHub release holds 1,000. Weekly needs
+    80,600 and would make the index — which is fetched before anything can be
+    decided — about 10 MB, so a customer would download 10 MB to learn that
+    nothing had changed.
 
-    Each year carries a digest, because the filenames are derived from the key
-    and are therefore *stable* — the name of this year's file is the same today
-    as yesterday even though its contents are not. Without something that
-    changes, nobody downstream could tell a refreshed year from an untouched
-    one.
+    Three pieces of unequal size gets the whole saving inside 189 files:
+    the month is small and moves daily, the year absorbs it monthly, and the
+    archive absorbs the year once a year.
+
+    Each piece carries a digest of its *contents*. The filenames are derived
+    from the publisher's key and so never change, and sealing draws a fresh
+    random nonce every time — as it must, since a keystream cipher reusing one
+    would give the key away. Without a content digest, nothing downstream could
+    tell a rebuilt piece from a changed one.
     """
     meta = store.read_meta(symbol)
     bars = store.load(symbol)
     if not len(bars):
         raise ValueError(f"{symbol} has no bars to publish")
 
-    years = []
-    for year in range(year_of(int(bars["t"][0])), year_of(int(bars["t"][-1])) + 1):
-        lo = int(np.searchsorted(bars["t"], _year_start(year)))
-        hi = int(np.searchsorted(bars["t"], _year_start(year + 1)))
+    parts = []
+    for part, (lo_t, hi_t) in part_bounds(now).items():
+        lo = int(np.searchsorted(bars["t"], lo_t))
+        hi = int(np.searchsorted(bars["t"], hi_t))
         if hi <= lo:
-            continue                       # a year the market did not trade
-        name = (crypt.name_for(f"{symbol}#{year}", publisher_key()) if seal
-                else f"{symbol}-{year}{SUFFIX}")
-        path = os.path.join(out_dir, name)
-        r = export([symbol], path, seal=seal, year=year)
-        years.append({"year": year, "file": name, "bytes": r["bytes"],
+            continue                  # nothing in this span; no file for it
+        name = (crypt.name_for(f"{symbol}#{part}", publisher_key()) if seal
+                else f"{symbol}-{part}{SUFFIX}")
+        r = export([symbol], os.path.join(out_dir, name), seal=seal,
+                   span=(lo_t, hi_t))
+        parts.append({"part": part, "file": name, "bytes": r["bytes"],
                       "bars": hi - lo, "sha": r["sha"]})
 
     return {
         "symbol": symbol,
-        "years": years,
-        "bytes": sum(y["bytes"] for y in years),
+        "parts": parts,
+        "bytes": sum(p["bytes"] for p in parts),
         "bars": meta.get("bars", int(len(bars))),
         "first": meta.get("first"),
         "last": meta.get("last"),
@@ -424,9 +462,10 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True) -> dict:
 
 
 def files_in(entry: dict) -> list[str]:
-    """Every file an index entry refers to, old format or new."""
-    if entry.get("years"):
-        return [y["file"] for y in entry["years"]]
+    """Every file an index entry refers to, whatever shape it is in."""
+    for key in ("parts", "years"):
+        if entry.get(key):
+            return [p["file"] for p in entry[key]]
     return [entry["file"]] if entry.get("file") else []
 
 
@@ -456,24 +495,24 @@ def write_index(entries: list[dict], out_dir: str, seal: bool = True) -> dict:
     return index
 
 
-def _years_path(symbol: str) -> str:
-    return os.path.join(paths.data_dir(), symbol.upper(), "years.json")
+def _parts_path(symbol: str) -> str:
+    return os.path.join(paths.data_dir(), symbol.upper(), "parts.json")
 
 
-def _years_held(symbol: str) -> dict:
-    """Which published years this machine already has, and at what digest."""
+def _parts_held(symbol: str) -> dict:
+    """Which published pieces this machine has, and at what digest."""
     try:
-        with open(_years_path(symbol), "r", encoding="utf-8") as f:
+        with open(_parts_path(symbol), "r", encoding="utf-8") as f:
             held = json.load(f)
         return held if isinstance(held, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _remember_year(symbol: str, year: int, sha: str) -> None:
-    held = _years_held(symbol)
-    held[str(year)] = sha
-    path = _years_path(symbol)
+def _remember_part(symbol: str, part: str, sha: str) -> None:
+    held = _parts_held(symbol)
+    held[str(part)] = sha
+    path = _parts_path(symbol)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -534,17 +573,18 @@ def mirror_fetch(base_url: str, symbol: str, progress=None,
 
     # Which pieces this machine still needs.
     #
-    # A published archive is one file per calendar year, and a year that has
-    # ended never changes again — so updating fetches this year, not everything
-    # since 2000. The comparison is against a digest rather than the filename,
-    # because names are derived from the publisher's key and stay the same when
-    # the contents do not.
-    have = _years_held(symbol)
-    if entry.get("years"):
-        wanted = [y for y in entry["years"] if have.get(str(y["year"])) != y["sha"]]
+    # A published instrument is three pieces — archive, year, month — of
+    # deliberately unequal size, so an ordinary update fetches this month
+    # rather than everything since 2000. The comparison is against a digest,
+    # not a filename: names are derived from the publisher's key and stay the
+    # same even when the contents do not.
+    have = _parts_held(symbol)
+    if entry.get("parts"):
+        wanted = [p for p in entry["parts"]
+                  if have.get(str(p["part"])) != p["sha"]]
     else:
-        # An archive published before the split. One file, all of it.
-        wanted = [{"year": None, "file": entry["file"],
+        # Published before the split: one file holding all of it.
+        wanted = [{"part": None, "file": entry["file"],
                    "bytes": entry.get("bytes", 0), "sha": ""}]
 
     if not wanted:
@@ -576,8 +616,8 @@ def mirror_fetch(base_url: str, symbol: str, progress=None,
             if on_stage:
                 on_stage("adding it to your history")
             result = import_bundle(tmp, progress=progress)
-            if piece["year"] is not None:
-                _remember_year(symbol, piece["year"], piece["sha"])
+            if piece["part"] is not None:
+                _remember_part(symbol, piece["part"], piece["sha"])
         finally:
             try:
                 os.remove(tmp)

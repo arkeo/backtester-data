@@ -159,10 +159,10 @@ def choose(symbols: list[str], index: dict) -> list[str]:
                     stale.append(symbol)
                 continue
             missing.append(symbol)
-        elif not entry.get("years"):
-            # Published before the archive was split by year. Due regardless of
-            # age: until it is rewritten it costs every mirror the whole file
-            # every night. Self-limiting — once migrated it never matches again.
+        elif not entry.get("parts"):
+            # Published before the archive was cut into pieces. Due regardless
+            # of age: until it is rewritten it costs every mirror the whole
+            # file nightly. Self-limiting — once done it never matches again.
             stale.append(symbol)
         elif _age_hours(entry) > REFRESH_HOURS:
             stale.append(symbol)
@@ -211,17 +211,16 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
     if not meta.get("bars"):
         return None
     left = backlog(symbol)
-    # One file per calendar year, not one for the instrument.
+    # Three pieces — archive, year, month — not one file for the instrument.
     #
-    # A single file had to be rewritten whole for every new trading day, so
-    # everyone mirroring the archive re-fetched all of it nightly to gain a
-    # day: over a thousand bytes moved per byte gained, and more than the
-    # server's whole monthly allowance. A finished year never changes, so only
-    # the current one is rewritten now.
+    # A single file was rewritten whole for every new trading day, so everyone
+    # mirroring re-fetched all of it nightly to gain a day: over a thousand
+    # bytes moved per byte gained, and more than the server's whole monthly
+    # allowance. Only the month moves daily now, and it is small.
     r = portable.publish_one(symbol, out_dir, seal=True)
     return {
         "symbol": symbol,
-        "years": r["years"],
+        "parts": r["parts"],
         "bytes": r["bytes"],
         "bars": meta["bars"],
         "first": meta.get("first"),
@@ -376,22 +375,27 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             # is byte-identical would push a new random nonce, which every
             # mirror downstream would read as new data — reintroducing the
             # very cost the split was made to remove.
-            had = {y["year"]: y["sha"] for y in (was or {}).get("years", [])}
-            moved = [y for y in fresh["years"] if had.get(y["year"]) != y["sha"]]
+            had = {p["part"]: p["sha"] for p in (was or {}).get("parts", [])}
+            moved = [p for p in fresh["parts"] if had.get(p["part"]) != p["sha"]]
             if do_upload:
-                for y in moved:
-                    upload(os.path.join(out_dir, y["file"]), tag)
+                for p in moved:
+                    upload(os.path.join(out_dir, p["file"]), tag)
                 # The single file this instrument used to be. Nothing else
                 # removes it: prune only drops instruments that left the
                 # catalogue, so without this the superseded copy would stay on
                 # the release for ever — paid for, downloaded by every mirror,
                 # and pointing at data now published twice.
-                stale_file = (was or {}).get("file")
-                if stale_file:
-                    subprocess.run(["gh", "release", "delete-asset", tag,
-                                    stale_file, "--yes"], check=False)
-                    print(f"  removed the old whole-instrument file",
-                          flush=True)
+                # Whatever this instrument used to be published as, minus
+                # what it is now. Nothing else removes these: prune only drops
+                # instruments that left the catalogue, so a superseded file
+                # would sit on the release for ever, downloaded by every
+                # mirror and pointing at data now published twice.
+                now_files = {p["file"] for p in fresh["parts"]}
+                for old_name in portable.files_in(was or {}):
+                    if old_name not in now_files:
+                        subprocess.run(["gh", "release", "delete-asset", tag,
+                                        old_name, "--yes"], check=False)
+                        print(f"  removed superseded {old_name}", flush=True)
             index[symbol] = fresh
             touched.append(symbol)
 
@@ -399,8 +403,8 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             last = store.from_unix(fresh["last"]).date() if fresh["last"] else "-"
             stalled = (f"  STALLED x{fresh['stalled']}" if fresh["stalled"] else "")
             print(f"  {fresh['bars']:,} bars  {first} .. {last}  "
-                  f"{fresh['bytes'] / 1e6:.0f} MB in {len(fresh['years'])} years, "
-                  f"{len(moved)} rewritten "
+                  f"{fresh['bytes'] / 1e6:.0f} MB in {len(fresh['parts'])} pieces, "
+                  f"{'+'.join(p['part'] for p in moved) or 'none'} rewritten "
                   f"({sum(y['bytes'] for y in moved) / 1e6:.1f} MB uploaded)  "
                   f"backlog={fresh['backlog']}{stalled}"
                   f"  ({time.time() - started:.0f}s)", flush=True)
