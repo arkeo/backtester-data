@@ -403,9 +403,20 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
                 # mirror and pointing at data now published twice.
                 now_files = {p["file"] for p in fresh["parts"]}
                 for old_name in portable.files_in(entry or {}):
-                    if old_name not in now_files:
-                        subprocess.run(["gh", "release", "delete-asset", tag,
-                                        old_name, "--yes"], check=False)
+                    if old_name in now_files:
+                        continue
+                    gone = subprocess.run(
+                        ["gh", "release", "delete-asset", tag, old_name,
+                         "--yes"], check=False, capture_output=True, text=True)
+                    if gone.returncode:
+                        # Said out loud. Swallowing this left two superseded
+                        # files on the release, 73 MB, which nothing would ever
+                        # have removed and nothing would ever have mentioned —
+                        # the index stops naming them, so they become invisible
+                        # rather than wrong.
+                        print(f"  WARNING could not remove {old_name}: "
+                              f"{gone.stderr.strip()[:80]}", flush=True)
+                    else:
                         print(f"  removed superseded {old_name}", flush=True)
             index[symbol] = fresh
             touched.append(symbol)
