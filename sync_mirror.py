@@ -86,6 +86,45 @@ def get(url: str, *, timeout: int = 60, attempts: int = 4) -> bytes:
     raise RuntimeError(f"{url}: {last}")
 
 
+#: When each mirrored file was last written by the publisher.
+#:
+#: Kept one level *above* the mirror folder, not inside it. That folder is what
+#: the web server hands out, and this file lists every filename on the mirror —
+#: which is exactly the map the sealed index exists to withhold. Inside, it
+#: would have published in one request what sealing the index was meant to
+#: prevent, and it would have been deleted by the prune below every run for
+#: not appearing in the release listing.
+STAMPS = "mirror-stamps.json"
+
+
+def _stamps_path(dest: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(dest.rstrip("/\\"))),
+                        STAMPS)
+
+
+def _stamps(dest: str) -> dict:
+    try:
+        with open(_stamps_path(dest), "r", encoding="utf-8") as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        # No record yet, or an unreadable one. Both mean "trust nothing", and
+        # the run re-fetches — expensive once, wrong never.
+        return {}
+
+
+def _write_stamps(dest: str, stamps: dict) -> None:
+    path = _stamps_path(dest)
+    tmp = path + PART
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(stamps, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        # Losing the record costs one re-fetch. It must never cost the run.
+        print(f"  could not write {STAMPS}: {e}", file=sys.stderr)
+
+
 def published(repo: str, tag: str) -> list[dict]:
     """What the release currently offers: name, size and where to get it."""
     url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
@@ -99,6 +138,12 @@ def published(repo: str, tag: str) -> list[dict]:
                  f"and has a release tagged '{tag}'.")
     return [
         {"name": a["name"], "size": int(a["size"]),
+         # When the publisher last wrote it. Size alone stopped being enough
+         # the day the archive started being re-sealed: sealing is a keystream
+         # cipher, so the same bars under a different key come to the same
+         # number of bytes to the byte, and a mirror comparing lengths would
+         # have gone on serving the old, licence-free copy for ever.
+         "stamp": a.get("updated_at") or a.get("created_at") or "",
          "url": a.get("browser_download_url") or
                 f"https://github.com/{repo}/releases/download/{tag}/{a['name']}"}
         for a in release.get("assets", [])
@@ -160,12 +205,21 @@ def main() -> int:
         elif os.path.isfile(path):
             have[name] = os.path.getsize(path)
 
-    # Size is enough to tell "already have it" from "changed". These files are
-    # rewritten wholesale when an instrument is refreshed, never edited in
-    # place, so a changed file is a different length essentially always — and
-    # the ones where it is not are caught by the application's own signature
-    # check when it opens them.
-    todo = [a for a in assets if have.get(a["name"]) != a["size"]]
+    # Size, and when the publisher last wrote it.
+    #
+    # Size alone was the rule, on the reasoning that a rewritten file is a
+    # different length essentially always. That stopped being true when the
+    # archive began to be re-sealed under a rotating key: the bars do not
+    # change, only the key does, and a keystream cipher gives back exactly as
+    # many bytes as it was handed. So the length matches, this mirror decides
+    # it already has the file, and it goes on serving the copy that opens
+    # without a licence — while the release it mirrors serves one that does
+    # not. That is the whole scheme defeated, silently, on the one mirror the
+    # customers it was built for actually reach.
+    seen = _stamps(dest)
+    todo = [a for a in assets
+            if have.get(a["name"]) != a["size"]
+            or (a.get("stamp") and seen.get(a["name"]) != a["stamp"])]
     total = sum(a["size"] for a in todo)
 
     print(f"published: {len(assets)} files, "
@@ -191,6 +245,10 @@ def main() -> int:
                   f"{asset['size'] / 1e6:.0f} MB  "
                   f"{asset['size'] / took / 1e6:.0f} MB/s")
             done += 1
+            # Written per file rather than once at the end, so a run killed
+            # halfway does not re-fetch everything it already had.
+            seen[asset["name"]] = asset.get("stamp", "")
+            _write_stamps(dest, seen)
         except (RuntimeError, urllib.error.URLError, OSError) as e:
             # One bad file must not stop the rest. The next run picks it up.
             print(f"  [{i}/{len(todo)}] {asset['name']}: {e}", file=sys.stderr)
