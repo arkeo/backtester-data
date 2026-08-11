@@ -360,8 +360,19 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
                 print(f"  restored {had:,} bars from the mirror", flush=True)
 
             before = store.bar_count(symbol)
-            prog = _with_ticker(
-                symbol, slice_for(deadline, len(todo) - done_so_far))
+
+            # An instrument that is only here to change shape needs no fetching
+            # at all. It was checked within the refresh window, so there is
+            # nothing new to get — and asking anyway costs it the full
+            # per-instrument slice waiting on a unit that never arrives, which
+            # is what turned a re-seal of seconds into twenty-five minutes.
+            only_shape = bool(entry) and not entry.get("parts")                 and not entry.get("backlog")                 and _age_hours(entry) <= REFRESH_HOURS
+            if only_shape:
+                print("  already current; re-sealing only", flush=True)
+                prog = fetch.Progress(symbol, 0)
+            else:
+                prog = _with_ticker(
+                    symbol, slice_for(deadline, len(todo) - done_so_far))
 
             fresh = seal(symbol, out_dir, was=entry,
                          gained=store.bar_count(symbol) - before)
@@ -375,7 +386,7 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             # is byte-identical would push a new random nonce, which every
             # mirror downstream would read as new data — reintroducing the
             # very cost the split was made to remove.
-            had = {p["part"]: p["sha"] for p in (was or {}).get("parts", [])}
+            had = {p["part"]: p["sha"] for p in (entry or {}).get("parts", [])}
             moved = [p for p in fresh["parts"] if had.get(p["part"]) != p["sha"]]
             if do_upload:
                 for p in moved:
@@ -391,7 +402,7 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
                 # would sit on the release for ever, downloaded by every
                 # mirror and pointing at data now published twice.
                 now_files = {p["file"] for p in fresh["parts"]}
-                for old_name in portable.files_in(was or {}):
+                for old_name in portable.files_in(entry or {}):
                     if old_name not in now_files:
                         subprocess.run(["gh", "release", "delete-asset", tag,
                                         old_name, "--yes"], check=False)
