@@ -159,6 +159,11 @@ def choose(symbols: list[str], index: dict) -> list[str]:
                     stale.append(symbol)
                 continue
             missing.append(symbol)
+        elif not entry.get("years"):
+            # Published before the archive was split by year. Due regardless of
+            # age: until it is rewritten it costs every mirror the whole file
+            # every night. Self-limiting — once migrated it never matches again.
+            stale.append(symbol)
         elif _age_hours(entry) > REFRESH_HOURS:
             stale.append(symbol)
 
@@ -376,6 +381,17 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             if do_upload:
                 for y in moved:
                     upload(os.path.join(out_dir, y["file"]), tag)
+                # The single file this instrument used to be. Nothing else
+                # removes it: prune only drops instruments that left the
+                # catalogue, so without this the superseded copy would stay on
+                # the release for ever — paid for, downloaded by every mirror,
+                # and pointing at data now published twice.
+                stale_file = (was or {}).get("file")
+                if stale_file:
+                    subprocess.run(["gh", "release", "delete-asset", tag,
+                                    stale_file, "--yes"], check=False)
+                    print(f"  removed the old whole-instrument file",
+                          flush=True)
             index[symbol] = fresh
             touched.append(symbol)
 
