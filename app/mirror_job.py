@@ -159,10 +159,12 @@ def choose(symbols: list[str], index: dict) -> list[str]:
                     stale.append(symbol)
                 continue
             missing.append(symbol)
-        elif not entry.get("parts"):
-            # Published before the archive was cut into pieces. Due regardless
-            # of age: until it is rewritten it costs every mirror the whole
-            # file nightly. Self-limiting — once done it never matches again.
+        elif not entry.get("parts") or _unsealed(entry):
+            # Published before the archive was cut into pieces, or before it
+            # was sealed with a content key. Due regardless of age: the first
+            # costs every mirror the whole file nightly, and the second means
+            # the history opens without a licence. Both are self-limiting —
+            # once done neither matches again.
             stale.append(symbol)
         elif _age_hours(entry) > REFRESH_HOURS:
             stale.append(symbol)
@@ -202,6 +204,18 @@ def restore(symbol: str, base_url: str, entry: dict | None) -> int:
             except OSError:
                 pass
     return store.bar_count(symbol)
+
+
+def _unsealed(entry: dict | None) -> bool:
+    """Whether any piece of this instrument still opens without a licence.
+
+    True while a piece carries no sealing period, which means it was written
+    with the publisher key — the one compiled into every copy of the
+    application. Self-limiting in exactly the way the piece-split migration
+    was: once every piece has a period, this never matches again.
+    """
+    parts = (entry or {}).get("parts") or []
+    return any(not p.get("key") for p in parts)
 
 
 def _stale(old: dict | None, new: dict) -> bool:
@@ -393,7 +407,10 @@ def run(base_url: str, out_dir: str, symbols: list[str], minutes: float,
             # nothing new to get — and asking anyway costs it the full
             # per-instrument slice waiting on a unit that never arrives, which
             # is what turned a re-seal of seconds into twenty-five minutes.
-            only_shape = bool(entry) and not entry.get("parts")                 and not entry.get("backlog")                 and _age_hours(entry) <= REFRESH_HOURS
+            only_shape = (bool(entry)
+                          and (not entry.get("parts") or _unsealed(entry))
+                          and not entry.get("backlog")
+                          and _age_hours(entry) <= REFRESH_HOURS)
             if only_shape:
                 print("  already current; re-sealing only", flush=True)
                 prog = fetch.Progress(symbol, 0)
