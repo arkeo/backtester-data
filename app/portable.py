@@ -166,6 +166,13 @@ def _at(year: int, month: int = 1) -> int:
 #: would download 10 MB to discover nothing had changed.
 PARTS = ("archive", "year", "month")
 
+#: Bumped to force every mirror to notice a change it otherwise cannot see.
+#:
+#: 2 — 2026-08-11, when the archive was re-sealed with a content key. The bytes
+#: changed and the lengths did not, so the mirror that compares lengths would
+#: have served the licence-free copy indefinitely.
+GENERATION = 2
+
 
 def part_bounds(now: int | None = None) -> dict[str, tuple[int, int]]:
     """Where each piece begins and ends, as unix seconds [start, end)."""
@@ -516,8 +523,21 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True,
         # Named from the publisher key, which never changes; sealed with this
         # month's, which does. Doing both from the rotating key would rename
         # every file every month.
-        name = (crypt.name_for(f"{symbol}#{part}", publisher_key()) if seal
-                else f"{symbol}-{part}{SUFFIX}")
+        #
+        # GENERATION is the exception, and it is deliberately a constant rather
+        # than anything that moves on its own. Sealing is a keystream cipher:
+        # re-sealing the same bars under a new key produces a file of exactly
+        # the same length, so a mirror that decides "have I got this?" by size
+        # goes on serving the old bytes for ever and never knows. Ours did, and
+        # the machine it runs on could not be reached to fix it. Bumping this
+        # renames every file once, which any mirror notices however naive it
+        # is: an unknown name is fetched, a withdrawn one is dropped.
+        #
+        # Bump it only to force exactly that, and never tie it to the month —
+        # that would rename all 189 files every month and cost every mirror the
+        # whole archive, which is what splitting the archive was to avoid.
+        name = (crypt.name_for(f"{symbol}#{part}#{GENERATION}", publisher_key())
+                if seal else f"{symbol}-{part}{SUFFIX}")
         r = export([symbol], os.path.join(out_dir, name), seal=seal,
                    span=(lo_t, hi_t), seal_key=key)
         parts.append({"part": part, "file": name, "bytes": r["bytes"],

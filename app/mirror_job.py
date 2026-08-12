@@ -242,6 +242,13 @@ def _stale(old: dict | None, new: dict) -> bool:
         return True
     if old.get("sha") != new.get("sha"):
         return True
+    # A piece that is about to be published under a different name has to go
+    # up under it, whatever else is true. Nothing else would put it there, and
+    # the tidying step below deletes every name this instrument used to have —
+    # so without this a rename would remove the old file and never upload the
+    # new one, which is not a stale mirror but a missing instrument.
+    if old.get("file") != new.get("file"):
+        return True
     return not old.get("key") and bool(new.get("key"))
 
 
