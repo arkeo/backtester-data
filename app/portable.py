@@ -561,9 +561,8 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True,
         # the bundle does not, and an index that advertised the store's newest
         # bar would promise a day it is not handing over.
         "bars": sum(p["bars"] for p in parts),
-        "last": newest or meta.get("last"),
         "first": meta.get("first"),
-        "last": meta.get("last"),
+        "last": newest or meta.get("last"),
         "has_spread": meta.get("has_spread", False),
     }
 
