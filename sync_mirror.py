@@ -100,6 +100,11 @@ def get(url: str, *, timeout: int = 60, attempts: int = 4) -> bytes:
 #: withholds is which *instrument* each hash is, and that is not in here.
 STAMPS = "mirror-stamps.json"
 
+#: What a published asset looks like. Everything on the release is sealed and
+#: named by hash, so the suffix is the whole test — and it is what keeps this
+#: job from deleting a file somebody else put in the folder it serves.
+MIRRORED = ".bin"
+
 
 def _stamps_path(dest: str) -> str:
     return os.path.join(dest, STAMPS)
@@ -205,11 +210,15 @@ def main() -> int:
         path = os.path.join(dest, name)
         if name.endswith(PART):
             os.remove(path)                  # an interrupted run; start it again
-        elif name == STAMPS:
-            # Ours, not the publisher's. Left out of `have` because the tidying
-            # step at the end deletes everything in there that the release does
-            # not offer — and this file never appears in a release listing, so
-            # it would be deleted at the end of the very run that wrote it.
+        elif not name.endswith(MIRRORED):
+            # Not ours to manage. The tidying step at the end deletes whatever
+            # in this folder the release no longer offers, and every published
+            # asset without exception is a `.bin` — so anything else here was
+            # put here deliberately by somebody, and deleting it would be this
+            # job overstepping. The record this script keeps is one such file,
+            # and it would otherwise be deleted at the end of the very run
+            # that wrote it; an installer served from the same folder is
+            # another, and losing that one is a customer with no download.
             continue
         elif os.path.isfile(path):
             have[name] = os.path.getsize(path)
