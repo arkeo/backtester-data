@@ -140,6 +140,36 @@ def prune(index: dict, tag: str, do_upload: bool) -> list[str]:
 STALLED_AFTER = 2
 
 
+def shut_all_day(symbol: str, entry: dict | None, now: float | None = None) -> bool:
+    """True when nothing can have traded since this instrument was last looked at.
+
+    There is exactly one case worth acting on and it is provable rather than
+    guessed. Only whole days are published, so on a Sunday the newest
+    publishable day is the Saturday — and nothing in this catalogue except
+    crypto trades on a Saturday, anywhere, ever. So a Sunday run over sixty-odd
+    instruments fetches sixty-odd times and finds nothing sixty-odd times, and
+    that is a seventh of everything this job costs on both ends.
+
+    Market *hours* are deliberately not modelled. Friday's close moves with
+    American daylight saving and Sunday's open with it, so anything finer than
+    "Saturdays are shut" would be a guess that silently drops real bars four
+    weeks a year — the same class of mistake as reading HistData's stamps as a
+    fixed offset.
+
+    Guarded on having actually looked since Friday ended. If the Saturday run
+    was missed, Friday is still unpublished, and skipping on the Sunday too
+    would hold it back until Monday.
+    """
+    if catalog.is_direct(symbol):
+        return False                     # crypto does not close
+    at = datetime.fromtimestamp(
+        time.time() if now is None else now, timezone.utc)
+    if at.weekday() != 6:                # Monday is 0, so this is Sunday
+        return False
+    saturday = portable.day_start(now) - 86400
+    return _checked_at(entry or {}) >= saturday
+
+
 def choose(symbols: list[str], index: dict) -> list[str]:
     """Which instruments this run should touch, most useful first.
 
@@ -150,6 +180,14 @@ def choose(symbols: list[str], index: dict) -> list[str]:
     missing, stale = [], []
     for symbol in symbols:
         entry = index.get(symbol)
+        # A shut market has no *new* bars — but backfilling is not about new
+        # bars. An instrument still reaching back to 2000 has years of units
+        # to fetch and a Sunday is as good a day as any to fetch them, so the
+        # skip applies only once an instrument is complete and merely being
+        # topped up.
+        if (entry is not None and not entry.get("backlog")
+                and shut_all_day(symbol, entry)):
+            continue
         if entry is None or entry.get("backlog", 1) > 0:
             if entry and entry.get("stalled", 0) >= STALLED_AFTER:
                 # Still needs the history; this machine simply cannot fetch it.
@@ -270,9 +308,10 @@ def seal(symbol: str, out_dir: str, was: dict | None = None,
         "symbol": symbol,
         "parts": r["parts"],
         "bytes": r["bytes"],
-        "bars": meta["bars"],
-        "first": meta.get("first"),
-        "last": meta.get("last"),
+        # From what was published, not from the store - see publish_one.
+        "bars": r["bars"],
+        "first": r.get("first") or meta.get("first"),
+        "last": r.get("last") or meta.get("last"),
         "has_spread": meta.get("has_spread", False),
         # Not read by the application. It is how the next run knows whether
         # this instrument is finished being backfilled without downloading it

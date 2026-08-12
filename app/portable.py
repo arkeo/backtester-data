@@ -166,16 +166,43 @@ def _at(year: int, month: int = 1) -> int:
 #: would download 10 MB to discover nothing had changed.
 PARTS = ("archive", "year", "month")
 
+def day_start(now: int | None = None) -> int:
+    """Midnight UTC at the start of the day `now` falls in."""
+    at = datetime.fromtimestamp(
+        int(time.time()) if now is None else int(now), timezone.utc)
+    return int(datetime(at.year, at.month, at.day, tzinfo=timezone.utc).timestamp())
+
+
 def part_bounds(now: int | None = None) -> dict[str, tuple[int, int]]:
-    """Where each piece begins and ends, as unix seconds [start, end)."""
+    """Where each piece begins and ends, as unix seconds [start, end).
+
+    The newest piece stops at **midnight this morning**, so what is published
+    is only ever whole days. Two reasons, and the second is the larger:
+
+    A day still being traded is not a day. Somebody backtesting the last week
+    would get a Thursday that ends at eleven in the morning, indistinguishable
+    on the chart from a Thursday that ended there — and a rule tested against
+    it would be tested against a session that had not happened yet.
+
+    And a growing day is rewritten every time it grows. The publisher runs
+    every three hours, so the newest piece was re-sealed and re-uploaded eight
+    times a day, and every mirror fetched all eight to end up with the same
+    day it would have had by waiting. Cut at midnight, that piece changes once
+    a day: the same data, an eighth of the traffic, on both ends.
+    """
     at = datetime.fromtimestamp(
         int(time.time()) if now is None else int(now), timezone.utc)
     year_start = _at(at.year)
     month_start = _at(at.year, at.month)
+    today = day_start(now)
     return {
         "archive": (0, year_start),
         "year": (year_start, month_start),
-        "month": (month_start, 2 ** 31 - 1),
+        # `today` and not infinity. Note it can equal `month_start` on the 1st
+        # of a month, which leaves the month piece empty until midnight — and
+        # an empty piece is simply not written, which is correct rather than
+        # something to work around.
+        "month": (month_start, max(month_start, today)),
     }
 
 
@@ -507,6 +534,7 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True,
 
     key, period = sealing_key()
     parts = []
+    newest = 0
     for part, (lo_t, hi_t) in part_bounds(now).items():
         lo = int(np.searchsorted(bars["t"], lo_t))
         hi = int(np.searchsorted(bars["t"], hi_t))
@@ -522,12 +550,18 @@ def publish_one(symbol: str, out_dir: str, seal: bool = True,
                    span=(lo_t, hi_t), seal_key=key)
         parts.append({"part": part, "file": name, "bytes": r["bytes"],
                       "bars": hi - lo, "sha": r["sha"], "key": period})
+        newest = max(newest, int(bars["t"][hi - 1]))
 
     return {
         "symbol": symbol,
         "parts": parts,
         "bytes": sum(p["bytes"] for p in parts),
-        "bars": meta.get("bars", int(len(bars))),
+        # What is *in the files*, not what is in the store. They differ now
+        # that only whole days are published: the store has today's bars and
+        # the bundle does not, and an index that advertised the store's newest
+        # bar would promise a day it is not handing over.
+        "bars": sum(p["bars"] for p in parts),
+        "last": newest or meta.get("last"),
         "first": meta.get("first"),
         "last": meta.get("last"),
         "has_spread": meta.get("has_spread", False),
