@@ -48,8 +48,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 330
 
+    # Every `gh` call below acts on THIS repository — the public one that holds
+    # the release — even though what is checked out at the root is the private
+    # source. Without this, gh reads the checked-out remote and goes looking for
+    # the release in the source repository, where there is none.
+    env:
+      GH_REPO: ${{ github.repository }}
+
     steps:
-      - uses: actions/checkout@v4
+      # The fetching code is not published. It lives in a private repository and
+      # is pulled in here with a read-only token, so this public repository can
+      # carry the releases without carrying the code that makes them.
+      - name: Get the code from the private repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+
+      # And this repository too, in a subfolder — only so the keep-alive step at
+      # the end has somewhere of its own to commit.
+      - name: Get this repository, for the keep-alive commit
+        uses: actions/checkout@v4
+        with:
+          path: _public
 
       - uses: actions/setup-python@v5
         with:
@@ -127,6 +148,9 @@ jobs:
       - name: Keep the schedule alive
         env:
           GH_TOKEN: ${{ github.token }}
+        # In the copy of THIS repository, not the private source checked out at
+        # the root — the commit has to land here, where the schedule lives.
+        working-directory: _public
         run: |
           LAST=$(git log -1 --format=%ct)
           AGE=$(( ( $(date +%s) - LAST ) / 86400 ))
