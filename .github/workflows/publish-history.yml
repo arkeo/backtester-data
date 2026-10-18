@@ -35,6 +35,15 @@ on:
     # whole day.
     - cron: "0 */3 * * *"
   workflow_dispatch:          # and a button, for the first run
+    inputs:
+      symbols:
+        description: "Only these (e.g. EURNZD); one named by itself is backfilled even when marked stalled"
+        required: false
+        default: ""
+      minutes:
+        description: "Fetching budget for this run"
+        required: false
+        default: ""
 
 concurrency:
   group: publish-history      # never two runs writing the same release
@@ -127,9 +136,9 @@ jobs:
           BACKTESTER_MIN_FREE_GB: "2"
           GH_TOKEN: ${{ github.token }}
         run: |
-          python -m app.mirror_job ${{ vars.SYMBOLS || 'all' }} \
+          python -m app.mirror_job ${{ inputs.symbols || vars.SYMBOLS || 'all' }} \
             --base-url "https://github.com/${{ github.repository }}/releases/download/history" \
-            --minutes "${{ vars.MINUTES || '120' }}" \
+            --minutes "${{ inputs.minutes || vars.MINUTES || '120' }}" \
             --tag history \
             --to mirror
 
