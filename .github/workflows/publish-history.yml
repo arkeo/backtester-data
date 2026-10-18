@@ -140,6 +140,7 @@ jobs:
             --base-url "https://github.com/${{ github.repository }}/releases/download/history" \
             --minutes "${{ inputs.minutes || vars.MINUTES || '120' }}" \
             --tag history \
+            --insist "${{ inputs.symbols || vars.BACKFILL }}" \
             --to mirror
 
       - name: Stamp the release
